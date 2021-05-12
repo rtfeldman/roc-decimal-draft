@@ -1,12 +1,7 @@
-pub mod signed_u64;
-
-use signed_u64::SignedU64;
-use std::convert::TryInto;
-
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RocDec {
-    hi: SignedU64, // high-order bits, but with the first bit reserved for the sign (so, NOT two's compliment!)
-    lo: u64,       // low-order bits
+    hi: i64, // high-order bits, including the sign
+    lo: u64, // low-order bits
 }
 
 impl Into<String> for RocDec {
@@ -51,34 +46,25 @@ impl<'a> std::convert::TryFrom<&'a str> for RocDec {
         };
 
         match before_point.parse::<i64>() {
-            Ok(hi) => Ok(RocDec {
-                hi: hi.try_into()?,
-                lo,
-            }),
+            Ok(hi) => Ok(RocDec { hi, lo }),
             Err(_) => {
                 match before_point {
-                    // This is a special case that's allowed - it's one lower than SignedU64::MIN.
-                    "-9223372036854775808" => {
+                    // This is a special case that's allowed - it's one lower than i64::MIN.
+                    "-9223372036854775809" => {
                         //
                         // Move the bottom digit into the low bits,
-                        // by setting hi to SignedU64::MIN and adding DECIMAL_MAX to lo
+                        // by setting hi to i64::MIN and adding DECIMAL_MAX to lo
                         match lo.checked_add(RocDec::DECIMAL_MAX) {
-                            Some(lo) => Ok(RocDec {
-                                hi: SignedU64::MIN,
-                                lo,
-                            }),
+                            Some(lo) => Ok(RocDec { hi: i64::MIN, lo }),
                             None => Err(()),
                         }
                     }
                     // This is another special case that's allowed - it's one higher than i64::MAX.
                     "9223372036854775808" => {
                         // Move the bottom digit into the low bits,
-                        // by setting hi to SignedU64::MAX and adding DECIMAL_MAX to lo
+                        // by setting hi to i64::MIN and adding DECIMAL_MAX to lo
                         match lo.checked_add(RocDec::DECIMAL_MAX) {
-                            Some(lo) => Ok(RocDec {
-                                hi: SignedU64::MAX,
-                                lo,
-                            }),
+                            Some(lo) => Ok(RocDec { hi: i64::MAX, lo }),
                             None => Err(()),
                         }
                     }
@@ -101,9 +87,9 @@ impl std::ops::Add for RocDec {
         // needed), but overall this means there will never be any dramatic
         // variations in performance because of branch mispredictions, and that
         // it will be faster on average across all invocations.
-        let other_hi: i64 = other.hi.into();
+        let other_hi = other.hi;
         let other_lo = other.lo;
-        let self_hi: i64 = self.hi.into();
+        let self_hi = self.hi;
         let self_lo = self.lo;
         let self_is_positive = self_hi.is_positive();
         let other_is_positive = other_hi.is_positive();
@@ -136,13 +122,12 @@ impl std::ops::Add for RocDec {
 
         let (hi, overflowed2) = self_hi.overflowing_add(hi_offset);
         let (hi, overflowed3) = hi.overflowing_add(other_hi);
-        let hi = hi.try_into();
 
         if overflowed2 || overflowed3 {
             todo!("TODO throw an error for overflow");
         }
 
-        RocDec { hi: hi.into(), lo }
+        RocDec { hi, lo }
     }
 }
 
