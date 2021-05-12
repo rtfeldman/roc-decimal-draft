@@ -186,6 +186,66 @@ impl std::ops::Sub for RocDec {
     }
 }
 
+impl std::ops::Mul for RocDec {
+    type Output = Self;
+
+    fn mul(self, other: Self) -> Self {
+        let other_hi = other.hi;
+        let other_lo = other.lo;
+        let self_hi = self.hi;
+        let self_lo = self.lo;
+
+        // let self_is_positive = self_hi.is_positive();
+        // let other_is_positive = other_hi.is_positive();
+
+        // // If they're both positive or both negative, the final answer is positive.
+        // // If the signs are different, the final answer is negative.
+        // let final_is_positive = self_is_positive == other_is_positive;
+
+        // Algorithm based on "Multiplication of larger integers" from:
+        //
+        // https://bisqwit.iki.fi/story/howto/bitmath/#MulUnsignedMultiplication
+        //
+        // That's where all the super short variable names like "ea" come from.
+
+        // Astonishingly, this optimizes to the assembly instructions for
+        // doing a "multiply two 64-bit integers and store the result as a
+        // 128-bit integer" CPU instruction!
+        //
+        // https://godbolt.org/z/KnvchqP97
+        //
+        // Note that this cannot overflow; in fact, if you try to do an
+        // overflowing_mul here, it gets optimized away!
+        let ea = (self_lo as i128) * (other_lo as i128);
+        let e = ea as i64;
+        let a = (ea >> 64) as i64;
+
+        let gf = (self_hi as i128) * (other_lo as i128);
+        let g = gf as i64;
+        let f = (gf >> 64) as i64;
+
+        let jh = (self_lo as i128) * (other_hi as i128);
+        let j = jh as i64;
+        let h = (jh >> 64) as i64;
+
+        let lk = (self_hi as i128) * (other_hi as i128);
+        let l = lk as i64;
+        let k = (lk >> 64) as i64;
+
+        let b = e + f + h;
+        let c = g + j + k /* TODO + carry from b */; // it doesn't say +k but I think it should be?
+        let d = l /* TODO + carry from c */;
+
+        dbg!("DCBA = {}{}{}{}", d, c, b, a);
+
+        // Since this is decimal multiplication, we "bit shift away" the lowest digits.
+        let hi = d;
+        let lo = c as u64; // TODO use u64 for everything maybe?
+
+        RocDec { hi, lo }
+    }
+}
+
 /// A fixed-point decimal value with 19 decimal places of precision.
 ///
 /// Why 19? Because 10^19 is the highest power of 10 that fits inside 2^64, and
@@ -284,7 +344,7 @@ impl RocDec {
 mod tests {
     use crate::RocDec;
     use std::convert::TryInto;
-    use std::ops::{Add, Sub};
+    use std::ops::{Add, Mul, Sub};
 
     fn assert_reflexive(hi: i64, lo: u64, expected_str: &str) {
         let dec = RocDec::new(hi, lo);
@@ -359,6 +419,7 @@ mod tests {
 
         assert_eq!(expected, dec1.add(dec2).to_string());
     }
+
     fn assert_subtracted(hi1: i64, lo1: u64, hi2: i64, lo2: u64, expected: &str) {
         let dec1 = RocDec::new(hi1, lo1);
         let dec2 = RocDec::new(hi2, lo2);
@@ -371,6 +432,20 @@ mod tests {
         let dec2: RocDec = dec2.try_into().unwrap();
 
         assert_eq!(expected, dec1.sub(dec2).to_string());
+    }
+
+    fn assert_multiplied(hi1: i64, lo1: u64, hi2: i64, lo2: u64, expected: &str) {
+        let dec1 = RocDec::new(hi1, lo1);
+        let dec2 = RocDec::new(hi2, lo2);
+
+        assert_eq!(expected, dec1.mul(dec2).to_string());
+    }
+
+    fn assert_mul(dec1: &str, dec2: &str, expected: &str) {
+        let dec1: RocDec = dec1.try_into().unwrap();
+        let dec2: RocDec = dec2.try_into().unwrap();
+
+        assert_eq!(expected, dec1.mul(dec2).to_string());
     }
 
     #[test]
@@ -409,5 +484,25 @@ mod tests {
             "222.0000000000000000444",
             "-111.0000000000000000111",
         );
+    }
+
+    #[test]
+    fn mul() {
+        // integers
+        assert_multiplied(0, 0, 0, 0, "0.0");
+        assert_mul("0.0", "0.0", "0.0");
+        assert_multiplied(2, 0, 3, 0, "6.0");
+        assert_mul("2.0", "3.0", "6.0");
+        assert_mul("2.3", "3.8", "8.74");
+        // assert_subtracted(123, 0, 456, 0, "-333.0");
+        // assert_sub("123.0", "456.0", "-333.0");
+
+        // // non-integers
+        // assert_subtracted(111, 555, 222, 444, "-111.0000000000000000111");
+        // assert_sub(
+        //     "111.0000000000000000555",
+        //     "222.0000000000000000444",
+        //     "-111.0000000000000000111",
+        // );
     }
 }
