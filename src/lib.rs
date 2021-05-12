@@ -195,12 +195,48 @@ impl std::ops::Mul for RocDec {
         let self_hi = self.hi;
         let self_lo = self.lo;
 
-        // let self_is_positive = self_hi.is_positive();
-        // let other_is_positive = other_hi.is_positive();
+        // If they're both negative, or if neither is negative, the final answer
+        // is positive or zero. If one is negative and the other isn't, the
+        // final answer is negative (or zero, in which case final sign won't matter).
+        //
+        // It's important that we do this in terms of negatives, because doing
+        // it in terms of positives instead causes bugs when both are 0.
+        let final_is_negative = self_hi.is_negative() != other_hi.is_negative();
 
-        // // If they're both positive or both negative, the final answer is positive.
-        // // If the signs are different, the final answer is negative.
-        // let final_is_positive = self_is_positive == other_is_positive;
+        let self_hi = match self_hi.checked_abs() {
+            Some(answer) => answer as u64,
+            None => {
+                // TODO try to support some of these cases maybe?
+                // Currently, if you try to do multiplication on i64::MIN, panic
+                // unless you're specifically multiplying by 0 or 1.
+                if other_hi == 0 && other_lo == 0 {
+                    return RocDec { hi: 0, lo: 0 };
+                } else if other_hi == 1 && other_lo == 0 {
+                    return RocDec { hi: self_hi, lo: 0 };
+                } else {
+                    todo!("TODO overflow!");
+                }
+            }
+        };
+
+        let other_hi = match other_hi.checked_abs() {
+            Some(answer) => answer as u64,
+            None => {
+                // TODO try to support some of these cases maybe?
+                // Currently, if you try to do multiplication on i64::MIN, panic
+                // unless you're specifically multiplying by 0 or 1.
+                if self_hi == 0 && self_lo == 0 {
+                    return RocDec { hi: 0, lo: 0 };
+                } else if self_hi == 1 && self_lo == 0 {
+                    return RocDec {
+                        hi: other_hi,
+                        lo: 0,
+                    };
+                } else {
+                    todo!("TODO overflow!");
+                }
+            }
+        };
 
         // Algorithm based on "Multiplication of larger integers" from:
         //
@@ -208,7 +244,7 @@ impl std::ops::Mul for RocDec {
         //
         // That's where all the super short variable names like "ea" come from.
 
-        // Astonishingly, this optimizes to the assembly instructions for
+        // Impressively, this optimizes to the assembly instructions for
         // doing a "multiply two 64-bit integers and store the result as a
         // 128-bit integer" CPU instruction!
         //
@@ -216,21 +252,21 @@ impl std::ops::Mul for RocDec {
         //
         // Note that this cannot overflow; in fact, if you try to do an
         // overflowing_mul here, it gets optimized away!
-        let ea = (self_lo as i128) * (other_lo as i128);
-        let e = ea as i64;
-        let a = (ea >> 64) as i64;
+        let ea = (self_lo as u128) * (other_lo as u128);
+        let e = ea as u64;
+        let a = (ea >> 64) as u64;
 
-        let gf = (self_hi as i128) * (other_lo as i128);
-        let g = gf as i64;
-        let f = (gf >> 64) as i64;
+        let gf = (self_hi as u128) * (other_lo as u128);
+        let g = gf as u64;
+        let f = (gf >> 64) as u64;
 
-        let jh = (self_lo as i128) * (other_hi as i128);
-        let j = jh as i64;
-        let h = (jh >> 64) as i64;
+        let jh = (self_lo as u128) * (other_hi as u128);
+        let j = jh as u64;
+        let h = (jh >> 64) as u64;
 
-        let lk = (self_hi as i128) * (other_hi as i128);
-        let l = lk as i64;
-        let k = (lk >> 64) as i64;
+        let lk = (self_hi as u128) * (other_hi as u128);
+        let l = lk as u64;
+        let k = (lk >> 64) as u64;
 
         let b = e + f + h;
         let c = g + j + k /* TODO + carry from b */; // it doesn't say +k but I think it should be?
@@ -239,8 +275,16 @@ impl std::ops::Mul for RocDec {
         dbg!("DCBA = {}{}{}{}", d, c, b, a);
 
         // Since this is decimal multiplication, we "bit shift away" the lowest digits.
-        let hi = d;
-        let lo = c as u64; // TODO use u64 for everything maybe?
+        let hi = if d <= i64::MAX as u64 {
+            d as i64
+        } else {
+            todo!("Overflow!");
+        };
+
+        // This compiles to a cmov!
+        let hi = if final_is_negative { -hi } else { hi };
+
+        let lo = c;
 
         RocDec { hi, lo }
     }
