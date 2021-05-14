@@ -253,30 +253,81 @@ impl std::ops::Mul for RocDec {
         // Note that this cannot overflow; in fact, if you try to do an
         // overflowing_mul here, it gets optimized away!
         let ea = (self_lo as u128) * (other_lo as u128);
-        let e = ea as u64;
-        let a = (ea >> 64) as u64;
+
+        // dbg!(ea);
+        // println!("EA:\n{:#0128b}", ea);
+
+        let (e, a) = decimalize(ea);
+
+        // println!("e a:\n{:#064b}{:#064b}", e, a);
 
         let gf = (self_hi as u128) * (other_lo as u128);
-        let g = gf as u64;
-        let f = (gf >> 64) as u64;
+        let (g, f) = decimalize(gf);
 
         let jh = (self_lo as u128) * (other_hi as u128);
-        let j = jh as u64;
-        let h = (jh >> 64) as u64;
+        let (j, h) = decimalize(jh);
 
         let lk = (self_hi as u128) * (other_hi as u128);
-        let l = lk as u64;
-        let k = (lk >> 64) as u64;
+        let (l, k) = decimalize(lk);
 
-        let b = e + f + h;
-        let c = g + j + k /* TODO + carry from b */; // it doesn't say +k but I think it should be?
-        let d = l /* TODO + carry from c */;
+        //         println!("* self = hi {} lo {}", self_hi, self_lo);
+        //         println!("* other = hi {} lo {}", other_hi, other_lo);
 
-        dbg!("DCBA = {}{}{}{}", d, c, b, a);
+        //         println!(
+        //             "* * * EA {} {} GF {} {} JH {} {} LK {} {}",
+        //             e, a, g, f, j, h, l, k
+        //         );
+
+        // b = e + f + h
+        let (e_plus_f, overflowed) = e.overflowing_add(f);
+        let b_carry1 = if overflowed { 1 } else { 0 };
+        let (b, overflowed) = e_plus_f.overflowing_add(h);
+        let b_carry2 = if overflowed { 1 } else { 0 };
+
+        // c = carry + g + j + k // it doesn't say +k but I think it should be?
+        let (g_plus_j, overflowed) = g.overflowing_add(j);
+        let c_carry1 = if overflowed { 1 } else { 0 };
+        let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k); // it doesn't say +k but I think it should be?
+        let c_carry2 = if overflowed { 1 } else { 0 };
+        let (c_without_bcarry2, overflowed) = g_plus_j_plus_k.overflowing_add(b_carry1);
+        let c_carry3 = if overflowed { 1 } else { 0 };
+        let (c, overflowed) = c_without_bcarry2.overflowing_add(b_carry2);
+        let c_carry4 = if overflowed { 1 } else { 0 };
+
+        // d = carry + l
+        let (d, overflowed1) = l.overflowing_add(c_carry1);
+        let (d, overflowed2) = d.overflowing_add(c_carry2);
+        let (d, overflowed3) = d.overflowing_add(c_carry3);
+        let (d, overflowed4) = d.overflowing_add(c_carry4);
+
+        // println!("    {}.{}", self_hi, self_lo);
+        // println!("  x {}.{}", other_hi, other_lo);
+        // println!("  -----");
+        // println!(" =   {}{}", e, a);
+        // println!("    {}{}", g, f);
+        // println!("    {}{}", j, h);
+        // println!(" + {}{}", l, k);
+        // println!(" ------");
+        // println!("   {}{}{}{}", d, c, b, a);
+
+        //         println!("       {} {}", self_hi, self_lo);
+        //         println!("     x {} {}", other_hi, other_lo);
+        //         println!("     -----");
+        //         println!(" =     {} {}", e, a);
+        //         println!("     {} {}", g, f);
+        //         println!("     {} {}", j, h);
+        //         println!(" + {} {}", l, k);
+        //         println!(" ------");
+        //         println!("   {} {} {} {}", d, c, b, a);
+
+        //         dbg!("DCBA = {}{}{}{}", d, c, b, a);
 
         // Since this is decimal multiplication, we "bit shift away" the lowest digits.
-        let hi = if d <= i64::MAX as u64 {
-            d as i64
+        let hi = if c <= i64::MAX as u64
+            && d == 0
+            && !(overflowed1 || overflowed2 || overflowed3 || overflowed4)
+        {
+            c as i64
         } else {
             todo!("Overflow!");
         };
@@ -284,7 +335,7 @@ impl std::ops::Mul for RocDec {
         // This compiles to a cmov!
         let hi = if final_is_negative { -hi } else { hi };
 
-        let lo = c;
+        let lo = b;
 
         RocDec { hi, lo }
     }
@@ -503,6 +554,7 @@ mod tests {
         assert_add("123.0", "456.0", "579.0");
 
         // non-integers
+        assert_add("0.1", "0.2", "0.3");
         assert_added(111, 555, 222, 444, "333.0000000000000000999");
         assert_add(
             "111.0000000000000000555",
@@ -522,6 +574,7 @@ mod tests {
         assert_sub("123.0", "456.0", "-333.0");
 
         // non-integers
+        assert_sub("0.3", "0.2", "0.1");
         assert_subtracted(111, 555, 222, 444, "-111.0000000000000000111");
         assert_sub(
             "111.0000000000000000555",
@@ -537,16 +590,30 @@ mod tests {
         assert_mul("0.0", "0.0", "0.0");
         assert_multiplied(2, 0, 3, 0, "6.0");
         assert_mul("2.0", "3.0", "6.0");
-        assert_mul("2.3", "3.8", "8.74");
-        // assert_subtracted(123, 0, 456, 0, "-333.0");
-        // assert_sub("123.0", "456.0", "-333.0");
+        assert_mul("2.0", "3.0", "6.0");
+        assert_mul("15.0", "74.0", "1110.0");
 
-        // // non-integers
-        // assert_subtracted(111, 555, 222, 444, "-111.0000000000000000111");
-        // assert_sub(
-        //     "111.0000000000000000555",
-        //     "222.0000000000000000444",
-        //     "-111.0000000000000000111",
-        // );
+        // non-integers
+        assert_mul("1.1", "2.2", "2.42");
+        assert_mul("2.0", "1.5", "3.0");
+        assert_mul("2.3", "3.8", "8.74");
+        assert_mul("1.01", "7.02", "7.0902");
+        assert_mul("1.001", "7.002", "7.009002");
+        assert_mul("1.0001", "7.0002", "7.00090002");
+        assert_mul("1.00001", "7.00002", "7.0000900002");
+        assert_mul("1.000001", "7.000002", "7.000009000002");
+        assert_mul("1.0000001", "7.0000002", "7.00000090000002");
+        assert_mul("1.00000001", "7.00000002", "7.0000000900000002");
+        assert_mul("1.000000001", "7.000000002", "7.000000009000000002");
+        assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
+        assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
     }
+}
+
+#[inline(always)]
+fn decimalize(num: u128) -> (u64, u64) {
+    let hi = (num / RocDec::DECIMAL_MAX as u128) as u64;
+    let lo = (num % RocDec::DECIMAL_MAX as u128) as u64;
+
+    (hi, lo)
 }
