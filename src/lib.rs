@@ -113,15 +113,29 @@ impl std::ops::Mul for RocDec {
         // final answer is negative (or zero, in which case final sign won't matter).
         //
         // It's important that we do this in terms of negatives, because doing
-        // it in terms of positives instead causes bugs when both are 0.
-        let final_is_negative = self_i128.is_negative() != other_i128.is_negative();
+        // it in terms of positives can cause bugs when one is zero.
+        let is_answer_negative = self_i128.is_negative() != other_i128.is_negative();
 
-        let self_hi = match self_i128.checked_abs() {
-            Some(answer) => (answer >> 64) as u64,
+        // Break the two i128s into two { hi: u64, lo: u64 } tuples, discarding
+        // the sign for now.
+        //
+        // We'll multiply all 4 combinations of these (hi1 x lo1, hi2 x lo2,
+        // hi1 x lo2, hi2 x lo1) and add them as appropriate, then apply the
+        // appropriate sign at the very end.
+        //
+        // We do checked_abs because if we had -i128::MAX before, this will overflow.
+        let (self_hi, self_lo) = match self_i128.checked_abs() {
+            Some(answer) => (
+                // hi (shift away the 64 low bits)
+                ((answer as u128 >> 64) as u64),
+                // lo (truncate the 64 high bits)
+                answer as u128 as u64,
+            ),
             None => {
-                // TODO try to support some of these cases maybe?
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
+                //
+                // Maybe we could support more cases in the future
                 if other_i128 == 0 {
                     // Anything times 0 is 0
                     return RocDec(0);
@@ -134,12 +148,18 @@ impl std::ops::Mul for RocDec {
             }
         };
 
-        let other_hi = match other_i128.checked_abs() {
-            Some(answer) => (answer >> 64) as u64,
+        let (other_hi, other_lo) = match other_i128.checked_abs() {
+            Some(answer) => (
+                // hi (shift away the 64 low bits)
+                ((answer as u128 >> 64) as u64),
+                // lo (truncate the 64 high bits)
+                answer as u128 as u64,
+            ),
             None => {
-                // TODO try to support some of these cases maybe?
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
+                //
+                // Maybe we could support more cases in the future
                 if self_i128 == 0 {
                     // Anything times 0 is 0
                     return RocDec(0);
@@ -151,9 +171,6 @@ impl std::ops::Mul for RocDec {
                 }
             }
         };
-
-        let self_lo = self_i128 as u64;
-        let other_lo = other_i128 as u64;
 
         // Algorithm based on "Multiplication of larger integers" from:
         //
@@ -171,12 +188,8 @@ impl std::ops::Mul for RocDec {
         // overflowing_mul here, it gets optimized away!
         let ea = (self_lo as u128) * (other_lo as u128);
 
-        // dbg!(ea);
-        // println!("EA:\n{:#0128b}", ea);
-
-        let (e, a) = decimalize(ea);
-
-        // println!("e a:\n{:#064b}{:#064b}", e, a);
+        // We discard `a` because it's the lowest digit
+        let (e, _a) = decimalize(ea);
 
         let gf = (self_hi as u128) * (other_lo as u128);
         let (g, f) = decimalize(gf);
@@ -187,24 +200,16 @@ impl std::ops::Mul for RocDec {
         let lk = (self_hi as u128) * (other_hi as u128);
         let (l, k) = decimalize(lk);
 
-        //         println!("* self = hi {} lo {}", self_hi, self_lo);
-        //         println!("* other = hi {} lo {}", other_hi, other_lo);
-
-        //         println!(
-        //             "* * * EA {} {} GF {} {} JH {} {} LK {} {}",
-        //             e, a, g, f, j, h, l, k
-        //         );
-
         // b = e + f + h
         let (e_plus_f, overflowed) = e.overflowing_add(f);
         let b_carry1 = if overflowed { 1 } else { 0 };
         let (b, overflowed) = e_plus_f.overflowing_add(h);
         let b_carry2 = if overflowed { 1 } else { 0 };
 
-        // c = carry + g + j + k // it doesn't say +k but I think it should be?
+        // c = carry + g + j + k (the link doesn't mention +k but I think that's a typo)
         let (g_plus_j, overflowed) = g.overflowing_add(j);
         let c_carry1 = if overflowed { 1 } else { 0 };
-        let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k); // it doesn't say +k but I think it should be?
+        let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k);
         let c_carry2 = if overflowed { 1 } else { 0 };
         let (c_without_bcarry2, overflowed) = g_plus_j_plus_k.overflowing_add(b_carry1);
         let c_carry3 = if overflowed { 1 } else { 0 };
@@ -217,44 +222,26 @@ impl std::ops::Mul for RocDec {
         let (d, overflowed3) = d.overflowing_add(c_carry3);
         let (d, overflowed4) = d.overflowing_add(c_carry4);
 
-        // println!("    {}.{}", self_hi, self_lo);
-        // println!("  x {}.{}", other_hi, other_lo);
-        // println!("  -----");
-        // println!(" =   {}{}", e, a);
-        // println!("    {}{}", g, f);
-        // println!("    {}{}", j, h);
-        // println!(" + {}{}", l, k);
-        // println!(" ------");
-        // println!("   {}{}{}{}", d, c, b, a);
+        let unsigned_answer = {
+            let hi = if d == 0 // if d > 0, we overflowed
+                && !(overflowed1 || overflowed2 || overflowed3 || overflowed4)
+            {
+                ((c as u128) << 64) as i128
+            } else {
+                todo!("Overflow!");
+            };
 
-        //         println!("       {} {}", self_hi, self_lo);
-        //         println!("     x {} {}", other_hi, other_lo);
-        //         println!("     -----");
-        //         println!(" =     {} {}", e, a);
-        //         println!("     {} {}", g, f);
-        //         println!("     {} {}", j, h);
-        //         println!(" + {} {}", l, k);
-        //         println!(" ------");
-        //         println!("   {} {} {} {}", d, c, b, a);
+            let lo = b as i128;
 
-        //         dbg!("DCBA = {}{}{}{}", d, c, b, a);
-
-        // Since this is decimal multiplication, we "bit shift away" the lowest digits.
-        let hi = if c <= i64::MAX as u64
-            && d == 0
-            && !(overflowed1 || overflowed2 || overflowed3 || overflowed4)
-        {
-            c as i64
-        } else {
-            todo!("Overflow!");
+            hi + lo
         };
 
         // This compiles to a cmov!
-        let hi = if final_is_negative { -hi } else { hi };
-
-        let lo = b;
-
-        RocDec::new(hi, lo)
+        if is_answer_negative {
+            RocDec(-unsigned_answer)
+        } else {
+            RocDec(unsigned_answer)
+        }
     }
 }
 
