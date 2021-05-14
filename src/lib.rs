@@ -502,8 +502,13 @@ mod tests {
         assert_mul("0.0", "0.0", "0.0");
         assert_multiplied(2, 0, 3, 0, "6.0");
         assert_mul("2.0", "3.0", "6.0");
-        assert_mul("2.0", "3.0", "6.0");
+        assert_mul("-2.0", "3.0", "-6.0");
+        assert_mul("2.0", "-3.0", "-6.0");
+        assert_mul("-2.0", "-3.0", "6.0");
         assert_mul("15.0", "74.0", "1110.0");
+        assert_mul("-15.0", "74.0", "-1110.0");
+        assert_mul("15.0", "-74.0", "-1110.0");
+        assert_mul("-15.0", "-74.0", "1110.0");
 
         // non-integers
         assert_mul("1.1", "2.2", "2.42");
