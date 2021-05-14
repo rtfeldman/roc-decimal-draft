@@ -58,6 +58,16 @@ fn d128_mul1(bench: &mut Bencher) {
 }
 
 #[bench]
+fn i128_mul1(bench: &mut Bencher) {
+    let i1: i128 = 12;
+    let i2: i128 = 34;
+
+    bench.iter(|| {
+        black_box(mul_i128_or_panic(i1, i2));
+    });
+}
+
+#[bench]
 fn f64_mul1(bench: &mut Bencher) {
     let f1: f64 = 1.2;
     let f2: f64 = 3.4;
@@ -98,6 +108,36 @@ fn f64_mul7(bench: &mut Bencher) {
 }
 
 #[bench]
+fn i128_mul7(bench: &mut Bencher) {
+    let i1: i128 = 12;
+    let i2: i128 = 34;
+
+    bench.iter(|| {
+        black_box({
+            let a = black_box(mul_i128_or_panic(i1, i2));
+            let a = black_box(mul_i128_or_panic(a, i1));
+            let a = black_box(mul_i128_or_panic(a, i2));
+            let a = black_box(mul_i128_or_panic(a, i1));
+            let a = black_box(mul_i128_or_panic(a, i2));
+            let a = black_box(mul_i128_or_panic(a, i1));
+            let a = black_box(mul_i128_or_panic(a, i2));
+            let a = black_box(mul_i128_or_panic(a, i1));
+            let a = black_box(mul_i128_or_panic(a, i2));
+            let a = black_box(mul_i128_or_panic(a, i1));
+            let a = black_box(mul_i128_or_panic(a, i2));
+            let a = black_box(mul_i128_or_panic(a, i1));
+            let a = black_box(mul_i128_or_panic(a, i2));
+            let a = black_box(mul_i128_or_panic(a, i1));
+            let a = black_box(mul_i128_or_panic(a, i2));
+            let a = black_box(mul_i128_or_panic(a, i1));
+            let a = black_box(mul_i128_or_panic(a, i2));
+
+            black_box(a)
+        })
+    });
+}
+
+#[bench]
 fn d128_mul7(bench: &mut Bencher) {
     let d1: d128 = d128!(1.2);
     let d2: d128 = d128!(3.4);
@@ -125,6 +165,16 @@ fn d128_mul7(bench: &mut Bencher) {
             black_box(a)
         })
     });
+}
+
+fn mul_i128_or_panic(a: i128, b: i128) -> i128 {
+    let (answer, overflowed) = a.overflowing_mul(b);
+
+    if !overflowed {
+        answer
+    } else {
+        todo!("throw an exception");
+    }
 }
 
 fn mul_d128_or_panic(a: d128, b: d128) -> d128 {
