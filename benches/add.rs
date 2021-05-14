@@ -2,7 +2,8 @@
 
 extern crate test;
 
-use decimal::RocDec;
+use decimal::d128;
+use roc_dec::RocDec;
 use std::convert::TryInto;
 use test::{black_box, Bencher};
 
@@ -57,6 +58,46 @@ fn f64_add1(bench: &mut Bencher) {
 }
 
 #[bench]
+fn d128_add1(bench: &mut Bencher) {
+    let d1: d128 = d128!(1.2);
+    let d2: d128 = d128!(3.4);
+
+    bench.iter(|| {
+        black_box(add_d128_or_panic(d1, d2));
+    });
+}
+
+#[bench]
+fn d128_add7(bench: &mut Bencher) {
+    let d1: d128 = d128!(1.2);
+    let d2: d128 = d128!(3.4);
+
+    bench.iter(|| {
+        black_box({
+            let a = black_box(add_d128_or_panic(d1, d2));
+            let a = black_box(add_d128_or_panic(a, d1));
+            let a = black_box(add_d128_or_panic(a, d2));
+            let a = black_box(add_d128_or_panic(a, d1));
+            let a = black_box(add_d128_or_panic(a, d2));
+            let a = black_box(add_d128_or_panic(a, d1));
+            let a = black_box(add_d128_or_panic(a, d2));
+            let a = black_box(add_d128_or_panic(a, d1));
+            let a = black_box(add_d128_or_panic(a, d2));
+            let a = black_box(add_d128_or_panic(a, d1));
+            let a = black_box(add_d128_or_panic(a, d2));
+            let a = black_box(add_d128_or_panic(a, d1));
+            let a = black_box(add_d128_or_panic(a, d2));
+            let a = black_box(add_d128_or_panic(a, d1));
+            let a = black_box(add_d128_or_panic(a, d2));
+            let a = black_box(add_d128_or_panic(a, d1));
+            let a = black_box(add_d128_or_panic(a, d2));
+
+            black_box(a)
+        })
+    });
+}
+
+#[bench]
 fn f64_add7(bench: &mut Bencher) {
     let f1: f64 = 1.2;
     let f2: f64 = 3.4;
@@ -87,6 +128,16 @@ fn f64_add7(bench: &mut Bencher) {
 }
 
 fn add_or_panic(a: f64, b: f64) -> f64 {
+    let answer = a + b;
+
+    if answer.is_finite() {
+        answer
+    } else {
+        todo!("throw an exception");
+    }
+}
+
+fn add_d128_or_panic(a: d128, b: d128) -> d128 {
     let answer = a + b;
 
     if answer.is_finite() {

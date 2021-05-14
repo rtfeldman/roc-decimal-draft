@@ -2,7 +2,7 @@
 
 extern crate test;
 
-use decimal::RocDec;
+use roc_dec::RocDec;
 use std::convert::TryInto;
 use test::{black_box, Bencher};
 
