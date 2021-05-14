@@ -59,8 +59,8 @@ fn f64_add1(bench: &mut Bencher) {
 
 #[bench]
 fn i128_add1(bench: &mut Bencher) {
-    let i1: i128 = 12;
-    let i2: i128 = 34;
+    let i1: i128 = 20446744073709551616;
+    let i2: i128 = 59340232221128654848;
 
     bench.iter(|| {
         black_box(add_i128_or_panic(i1, i2));
@@ -69,8 +69,8 @@ fn i128_add1(bench: &mut Bencher) {
 
 #[bench]
 fn i128_add7(bench: &mut Bencher) {
-    let i1: i128 = 12;
-    let i2: i128 = 34;
+    let i1: i128 = 20446744073709551616;
+    let i2: i128 = 59340232221128654848;
 
     bench.iter(|| {
         black_box({

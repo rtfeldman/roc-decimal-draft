@@ -1,8 +1,5 @@
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct RocDec {
-    hi: i64, // high-order bits, including the sign
-    lo: u64, // low-order bits
-}
+pub struct RocDec(i128);
 
 impl Into<String> for RocDec {
     fn into(self) -> String {
@@ -46,7 +43,7 @@ impl<'a> std::convert::TryFrom<&'a str> for RocDec {
         };
 
         match before_point.parse::<i64>() {
-            Ok(hi) => Ok(RocDec { hi, lo }),
+            Ok(hi) => Ok(RocDec::new(hi, lo)),
             Err(_) => {
                 match before_point {
                     // This is a special case that's allowed - it's one lower than i64::MIN.
@@ -55,7 +52,7 @@ impl<'a> std::convert::TryFrom<&'a str> for RocDec {
                         // Move the bottom digit into the low bits,
                         // by setting hi to i64::MIN and adding DECIMAL_MAX to lo
                         match lo.checked_add(RocDec::DECIMAL_MAX) {
-                            Some(lo) => Ok(RocDec { hi: i64::MIN, lo }),
+                            Some(lo) => Ok(RocDec::new(i64::MIN, lo)),
                             None => Err(()),
                         }
                     }
@@ -64,7 +61,7 @@ impl<'a> std::convert::TryFrom<&'a str> for RocDec {
                         // Move the bottom digit into the low bits,
                         // by setting hi to i64::MIN and adding DECIMAL_MAX to lo
                         match lo.checked_add(RocDec::DECIMAL_MAX) {
-                            Some(lo) => Ok(RocDec { hi: i64::MAX, lo }),
+                            Some(lo) => Ok(RocDec::new(i64::MAX, lo)),
                             None => Err(()),
                         }
                     }
@@ -80,54 +77,13 @@ impl std::ops::Add for RocDec {
     type Output = Self;
 
     fn add(self, other: Self) -> Self {
-        // Care has been taken to make this branchless by using cmov conditionals
-        // only. The result is that it does a couple of operations that
-        // wouldn't be necessary otherwise (specifically doing both an
-        // overflowing_add and overflowing_sub due to not knowing which will be
-        // needed), but overall this means there will never be any dramatic
-        // variations in performance because of branch mispredictions, and that
-        // it will be faster on average across all invocations.
-        let other_hi = other.hi;
-        let other_lo = other.lo;
-        let self_hi = self.hi;
-        let self_lo = self.lo;
-        let self_is_positive = self_hi.is_positive();
-        let other_is_positive = other_hi.is_positive();
+        let (answer, overflowed) = self.0.overflowing_add(other.0);
 
-        // Unfortunately, since these are u64 values, we actually need to
-        // (situationally) do a subtraction instruction here. We can't just
-        // negate them, because they might be too big to fit in an i64.
-        //
-        // To avoid branch mispredictions, we do both the add as well as
-        // the sub operation. This means we're always paying +1 cycle, but
-        // that's better than sometimes paying 0 and other times paying many.
-        let (lo_added, add_overflowed) = self_lo.overflowing_add(other_lo);
-        let (lo_subtracted, sub_overflowed) = self_lo.overflowing_sub(other_lo);
-        let same_sign = self_is_positive == other_is_positive;
-        let lo = if same_sign { lo_added } else { lo_subtracted };
-        let hi_offset = {
-            let hi_sign: i64 = if self_is_positive { 1 } else { -1 };
-            let overflowed = if same_sign {
-                add_overflowed
-            } else {
-                sub_overflowed
-            };
-
-            if overflowed {
-                hi_sign
-            } else {
-                0
-            }
-        };
-
-        let (hi, overflowed2) = self_hi.overflowing_add(hi_offset);
-        let (hi, overflowed3) = hi.overflowing_add(other_hi);
-
-        if overflowed2 || overflowed3 {
-            todo!("TODO throw an error for overflow");
+        if !overflowed {
+            RocDec(answer)
+        } else {
+            todo!("throw an exception");
         }
-
-        RocDec { hi, lo }
     }
 }
 
@@ -135,54 +91,13 @@ impl std::ops::Sub for RocDec {
     type Output = Self;
 
     fn sub(self, other: Self) -> Self {
-        // Care has been taken to make this branchless by using cmov conditionals
-        // only. The result is that it does a couple of operations that
-        // wouldn't be necessary otherwise (specifically doing both an
-        // overflowing_add and overflowing_sub due to not knowing which will be
-        // needed), but overall this means there will never be any dramatic
-        // variations in performance because of branch mispredictions, and that
-        // it will be faster on average across all invocations.
-        let other_hi = other.hi;
-        let other_lo = other.lo;
-        let self_hi = self.hi;
-        let self_lo = self.lo;
-        let self_is_positive = self_hi.is_positive();
-        let other_is_positive = other_hi.is_positive();
+        let (answer, overflowed) = self.0.overflowing_sub(other.0);
 
-        // Unfortunately, since these are u64 values, we actually need to
-        // (situationally) do a subtraction instruction here. We can't just
-        // negate them, because they might be too big to fit in an i64.
-        //
-        // To avoid branch mispredictions, we do both the add as well as
-        // the sub operation. This means we're always paying +1 cycle, but
-        // that's better than sometimes paying 0 and other times paying many.
-        let (lo_added, add_overflowed) = self_lo.overflowing_add(other_lo);
-        let (lo_subtracted, sub_overflowed) = self_lo.overflowing_sub(other_lo);
-        let same_sign = self_is_positive == other_is_positive;
-        let lo = if same_sign { lo_subtracted } else { lo_added };
-        let hi_offset = {
-            let hi_sign: i64 = if self_is_positive { 1 } else { -1 };
-            let overflowed = if same_sign {
-                sub_overflowed
-            } else {
-                add_overflowed
-            };
-
-            if overflowed {
-                hi_sign
-            } else {
-                0
-            }
-        };
-
-        let (hi, overflowed2) = self_hi.overflowing_sub(hi_offset);
-        let (hi, overflowed3) = hi.overflowing_sub(other_hi);
-
-        if overflowed2 || overflowed3 {
-            todo!("TODO throw an error for overflow");
+        if !overflowed {
+            RocDec(answer)
+        } else {
+            todo!("throw an exception");
         }
-
-        RocDec { hi, lo }
     }
 }
 
@@ -190,10 +105,8 @@ impl std::ops::Mul for RocDec {
     type Output = Self;
 
     fn mul(self, other: Self) -> Self {
-        let other_hi = other.hi;
-        let other_lo = other.lo;
-        let self_hi = self.hi;
-        let self_lo = self.lo;
+        let self_i128 = self.0;
+        let other_i128 = other.0;
 
         // If they're both negative, or if neither is negative, the final answer
         // is positive or zero. If one is negative and the other isn't, the
@@ -201,42 +114,46 @@ impl std::ops::Mul for RocDec {
         //
         // It's important that we do this in terms of negatives, because doing
         // it in terms of positives instead causes bugs when both are 0.
-        let final_is_negative = self_hi.is_negative() != other_hi.is_negative();
+        let final_is_negative = self_i128.is_negative() != other_i128.is_negative();
 
-        let self_hi = match self_hi.checked_abs() {
-            Some(answer) => answer as u64,
+        let self_hi = match self_i128.checked_abs() {
+            Some(answer) => (answer >> 64) as u64,
             None => {
                 // TODO try to support some of these cases maybe?
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
-                if other_hi == 0 && other_lo == 0 {
-                    return RocDec { hi: 0, lo: 0 };
-                } else if other_hi == 1 && other_lo == 0 {
-                    return RocDec { hi: self_hi, lo: 0 };
+                if other_i128 == 0 {
+                    // Anything times 0 is 0
+                    return RocDec(0);
+                } else if other_i128 == 1 {
+                    // Anything times 1 is itself
+                    return self;
                 } else {
                     todo!("TODO overflow!");
                 }
             }
         };
 
-        let other_hi = match other_hi.checked_abs() {
-            Some(answer) => answer as u64,
+        let other_hi = match other_i128.checked_abs() {
+            Some(answer) => (answer >> 64) as u64,
             None => {
                 // TODO try to support some of these cases maybe?
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
-                if self_hi == 0 && self_lo == 0 {
-                    return RocDec { hi: 0, lo: 0 };
-                } else if self_hi == 1 && self_lo == 0 {
-                    return RocDec {
-                        hi: other_hi,
-                        lo: 0,
-                    };
+                if self_i128 == 0 {
+                    // Anything times 0 is 0
+                    return RocDec(0);
+                } else if self_i128 == 1 {
+                    // Anything times 1 is itself
+                    return other;
                 } else {
                     todo!("TODO overflow!");
                 }
             }
         };
+
+        let self_lo = self_i128 as u64;
+        let other_lo = other_i128 as u64;
 
         // Algorithm based on "Multiplication of larger integers" from:
         //
@@ -337,7 +254,7 @@ impl std::ops::Mul for RocDec {
 
         let lo = b;
 
-        RocDec { hi, lo }
+        RocDec::new(hi, lo)
     }
 }
 
@@ -353,13 +270,21 @@ impl RocDec {
     /// The highest u64 where the first digit is 1 and every other digit is 0.
     const DECIMAL_MAX: u64 = 10_000_000_000_000_000_000;
 
-    pub fn new(hi: i64, lo: u64) -> Self {
-        RocDec { hi, lo }
+    fn new(hi: i64, lo: u64) -> Self {
+        RocDec(((hi as i128) << 64) + lo as i128)
+    }
+
+    fn hi(self) -> i64 {
+        (self.0 >> 64) as i64
+    }
+
+    fn lo(self) -> u64 {
+        self.0 as u64
     }
 
     pub fn to_string(self) -> String {
-        let hi = self.hi;
-        let lo = self.lo;
+        let hi = self.hi();
+        let lo = self.lo();
 
         // Next, we want to compute the number before the decimal point
         // and the number after the decimal point. hi and lo are almost there,
