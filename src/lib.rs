@@ -63,6 +63,7 @@ impl<'a> std::convert::TryFrom<&'a str> for RocDec {
 impl std::ops::Neg for RocDec {
     type Output = Self;
 
+    #[inline(always)]
     fn neg(self) -> Self::Output {
         match self.0.checked_neg() {
             Some(answer) => RocDec(answer),
@@ -76,6 +77,7 @@ impl std::ops::Neg for RocDec {
 impl std::ops::Add for RocDec {
     type Output = Self;
 
+    #[inline(always)]
     fn add(self, other: Self) -> Self {
         let (answer, overflowed) = self.0.overflowing_add(other.0);
 
@@ -90,6 +92,7 @@ impl std::ops::Add for RocDec {
 impl std::ops::Sub for RocDec {
     type Output = Self;
 
+    #[inline(always)]
     fn sub(self, other: Self) -> Self {
         let (answer, overflowed) = self.0.overflowing_sub(other.0);
 
