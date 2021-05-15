@@ -276,17 +276,18 @@ impl RocDec {
     /// The highest u64 where the first digit is 1 and every other digit is 0.
     const DECIMAL_MAX: u64 = 10_000_000_000_000_000_000;
 
-    fn hi(self) -> i64 {
-        (self.0 >> 64) as i64
-    }
-
-    fn lo(self) -> u64 {
-        self.0 as u64
-    }
-
     pub fn to_string(self) -> String {
-        let hi = self.hi();
-        let lo = self.lo();
+        let is_negative = self.0.is_negative();
+        let self_u128 = match self.0.checked_abs() {
+            Some(answer) => answer as u128,
+            None => {
+                // we're in the highly uncommon edge case where self.0 == i128::MIN,
+                // which needs special-casing to avoid overflow.
+                return "-922337203.6854775808".to_string(); // TODO put the right number here
+            }
+        };
+        let hi = (self_u128 >> 64) as u64;
+        let lo = self_u128 as u64;
 
         // Next, we want to compute the number before the decimal point
         // and the number after the decimal point. hi and lo are almost there,
@@ -316,7 +317,15 @@ impl RocDec {
         let mut buf = String::with_capacity(64);
 
         // TODO switch to RocStr and account for small string optimization
-        if hi.is_positive() {
+        if is_negative {
+            // Since hi is not i64::MIN, we can (branchlessly) potentially
+            // subtract 1 from it without any possibility of overflow.
+            let hi_offset: u64 = if lo_offset == 0 { 0 } else { 1 };
+            let before_point = hi - hi_offset as u64;
+
+            // TODO do all this string logic without new allocations
+            buf.push_str(&format!("-{}", before_point));
+        } else {
             // It's positive, so casting to u64 is a no-op.
             // We need to cast to u64, because if it was previously isize::MAX,
             // we could potentially get signed integer overflow!
@@ -325,27 +334,6 @@ impl RocDec {
 
             // TODO do all this string logic without new allocations
             buf.push_str(&before_point.to_string());
-        } else if hi != i64::MIN {
-            // Since hi is not i64::MIN, we can (branchlessly) potentially
-            // subtract 1 from it without any possibility of overflow.
-            let hi_offset: u64 = if lo_offset == 0 { 0 } else { 1 };
-            let before_point = hi - hi_offset as i64;
-
-            // TODO do all this string logic without new allocations
-            buf.push_str(&before_point.to_string());
-        } else {
-            // we're in the highly uncommon edge case where hi == i64::MIN,
-            // which needs special-casing to avoid overflow.
-
-            if lo_offset == 0 {
-                // lo did not overflow, so we can just use i64::MIN
-                buf.push_str("-9223372036854775808");
-            } else {
-                // This is 1 lower than i64::MIN, which would overflow if
-                // we tried to store it as an i64 in memory, but which is fine
-                // as long as we push it directly into the string.
-                buf.push_str("-9223372036854775809");
-            }
         }
 
         // TODO do all this by hand without more allocations or trim_matches()
