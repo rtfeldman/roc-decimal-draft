@@ -318,23 +318,17 @@ impl RocDec {
 
         // TODO switch to RocStr and account for small string optimization
         if is_negative {
-            // Since hi is not i64::MIN, we can (branchlessly) potentially
-            // subtract 1 from it without any possibility of overflow.
-            let hi_offset: u64 = if lo_offset == 0 { 0 } else { 1 };
-            let before_point = hi - hi_offset as u64;
-
-            // TODO do all this string logic without new allocations
-            buf.push_str(&format!("-{}", before_point));
-        } else {
-            // It's positive, so casting to u64 is a no-op.
-            // We need to cast to u64, because if it was previously isize::MAX,
-            // we could potentially get signed integer overflow!
-            let hi_offset: u64 = if lo_offset == 0 { 0 } else { 1 };
-            let before_point = hi as u64 + hi_offset;
-
-            // TODO do all this string logic without new allocations
-            buf.push_str(&before_point.to_string());
+            buf.push('-');
         }
+
+        // It's positive, so casting to u64 is a no-op.
+        // We need to cast to u64, because if it was previously isize::MAX,
+        // we could potentially get signed integer overflow!
+        let hi_offset: u64 = if lo_offset == 0 { 0 } else { 1 };
+        let before_point = hi + hi_offset;
+
+        // TODO do all this string logic without new allocations
+        buf.push_str(&before_point.to_string());
 
         // TODO do all this by hand without more allocations or trim_matches()
         if after_point == 0 {
