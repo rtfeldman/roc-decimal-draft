@@ -3,7 +3,7 @@ pub struct RocDec(i128);
 
 // The result of calling to_string() on RocDec(i128::MIN).
 // This is both a special case and also the longest to_string().
-static I128_MIN_STR: &str = "-17014118346046923173.1687303715884105728";
+static I128_MIN_STR: &str = "-1701411834604692317.31687303715884105728";
 
 impl Into<String> for RocDec {
     fn into(self) -> String {
@@ -50,8 +50,7 @@ impl<'a> std::convert::TryFrom<&'a str> for RocDec {
 
         match before_point.parse::<i128>() {
             Ok(answer)
-                if dbg!(answer) >= RocDec::BEFORE_POINT_MIN
-                    && answer <= RocDec::BEFORE_POINT_MAX =>
+                if answer >= RocDec::BEFORE_POINT_MIN && answer <= RocDec::BEFORE_POINT_MAX =>
             {
                 Ok(RocDec(((answer as i128) << 64) + lo))
             }
@@ -127,10 +126,10 @@ impl std::ops::Mul for RocDec {
         // appropriate sign at the very end.
         //
         // We do checked_abs because if we had -i128::MAX before, this will overflow.
-        let (self_hi, self_lo) = match dbg!(self_i128).checked_abs() {
+        let (self_hi, self_lo) = match self_i128.checked_abs() {
             Some(answer) => (
                 // hi (shift away the 64 low bits)
-                ((dbg!(answer) as u128 >> 64) as u64),
+                ((answer as u128 >> 64) as u64),
                 // lo (truncate the 64 high bits)
                 answer as u128 as u64,
             ),
@@ -174,8 +173,6 @@ impl std::ops::Mul for RocDec {
                 }
             }
         };
-
-        dbg!(self_hi, self_lo, other_hi, other_lo);
 
         // Algorithm based on "Multiplication of larger integers" from:
         //
@@ -241,8 +238,6 @@ impl std::ops::Mul for RocDec {
             hi + lo
         };
 
-        dbg!(unsigned_answer);
-
         // This compiles to a cmov!
         if is_answer_negative {
             RocDec(-unsigned_answer)
@@ -262,7 +257,8 @@ impl std::ops::Mul for RocDec {
 /// and the highest is 9223372036854775808.8446744073709551615
 impl RocDec {
     /// The highest u64 where the first digit is 1 and every other digit is 0.
-    const DECIMAL_MAX: u64 = 10_000_000_000_000_000_000;
+    const DECIMAL_PLACES: u32 = 20;
+    const DECIMAL_MAX: i128 = i128::MAX - 10i128.pow(Self::DECIMAL_PLACES);
 
     const BEFORE_POINT_MAX: i128 = 17014118346046923173;
     const BEFORE_POINT_MIN: i128 = -17014118346046923174;
@@ -285,22 +281,72 @@ impl RocDec {
                 // TODO do this with a RocStr, and don't allocate on the heap
                 // until we've run out of stack bytes for a small str.
                 let mut string = String::with_capacity(I128_MIN_STR.len());
-                let mut has_dot = false;
+                let mut display_zeroes = false;
+                let mut decimal_places_used = 0;
 
                 // The number has at least one nonzero digit before the
                 // decimal point, so we don't need to pad the rest with 0s.
                 while self_u128 != 0 {
-                    let rem = (self_u128 % 10) as u8; // base 10
-                    let ascii_byte = if rem > 9 { b'a' - 10 } else { b'0' };
+                    // Get the last digit of the number and convert it to ASCII.
+                    let rem = (self_u128 % 10) as u8;
+                    let ascii_byte = rem + if rem > 9 { b'a' - 10 } else { b'0' };
 
-                    if self_u128 < RocDec::DECIMAL_MAX as u128 && !has_dot {
-                        string.push('.');
-                        has_dot = true;
+                    // Only print zeroes if display_zeroes is set,
+                    // but always print non-zeroes.
+                    if display_zeroes || ascii_byte != b'0' {
+                        string.push(ascii_byte as char);
+
+                        // As soon as we hit our first nonzero number,
+                        // we should start showing zeroes from then on.
+                        // (All the others are potentially trailing zeroes.)
+                        display_zeroes = true;
                     }
 
-                    string.push((rem + ascii_byte) as char);
-
                     self_u128 = self_u128 / 10;
+
+                    // Increment this even if we didn't push anything onto the string!
+                    // Later on, this tells us how many zeroes to use for padding.
+                    decimal_places_used += 1;
+
+                    // If we've used all our decimal places, it's now time to
+                    // add the dot.
+                    if decimal_places_used == Self::DECIMAL_PLACES {
+                        // If we're about to end the loop, push the decimal
+                        // point folloewd by the 0 we need, and break early.
+                        if self_u128 == 0 {
+                            string.push_str(".0");
+                            break;
+                        }
+
+                        // display_zeroes would only be false here if we had
+                        // seen only (trailing, unnecessary) zeroes so far.
+                        if !display_zeroes {
+                            // Since we had all zeroes after the decimal point
+                            // put a single 0 in there so the final string will
+                            // end in ".0" instead of in "."
+                            // (after reversing, of course).
+                            string.push('0');
+                        }
+
+                        string.push('.');
+
+                        // After the dot, display all zeroes.
+                        // (Otherwise we would incorrectly display `100` as `1`)
+                        display_zeroes = true;
+                    }
+                }
+
+                if decimal_places_used < Self::DECIMAL_PLACES {
+                    // We ended without having emitted a dot, so print out
+                    // some zeroes as padding and then add a dot and a zero.
+                    // (Remember, these will get reversed! This adds "0." to
+                    // the beginning of the string, and then a bunch of zeroes
+                    // after the dot.)
+                    for _ in 0..(Self::DECIMAL_PLACES - decimal_places_used) {
+                        string.push('0');
+                    }
+
+                    string.push_str(".0");
                 }
 
                 // If number is negative, append '-'
@@ -429,14 +475,8 @@ mod tests {
             );
         }
 
-        dbg!(dec, -dec);
-        dbg!(dec.to_string(), (-dec).to_string());
-
         // After removing minus signs, both strings should be equal.
-        assert_eq!(
-            dbg!(string).replace("-", ""),
-            dbg!((-dec).to_string()).replace("-", "")
-        );
+        assert_eq!(string.replace("-", ""), (-dec).to_string().replace("-", ""));
     }
 
     #[test]
@@ -448,155 +488,214 @@ mod tests {
     }
 
     #[test]
-    fn to_string() {
-        // zero low bits
-        assert_eq!(RocDec(0).to_string(), "0.0");
-        assert_eq!(RocDec(1).to_string(), "0.0000000000000000001");
-        //     assert_eq!(RocDec(10000000000000000000).to_string(), "1.0");
-        //     assert_eq!(RocDec(-10000000000000000000).to_string(), "-1.0");
-        //     assert_eq!(RocDec(120000000000000000000).to_string(), "12.0");
-        //     assert_eq!(RocDec(-120000000000000000000).to_string(), "-12.0");
-        //     assert_eq!(RocDec(3650000000000000000000).to_string(), "365.0");
-        //     assert_eq!(RocDec(-3650000000000000000000).to_string(), "-365.0");
-
-        //     // // different sized high bits and low bits
-        //     // assert_reflexive("0.0000000000000000001");
-        //     // assert_reflexive("360.0000000000000000001");
-        //     // assert_reflexive("360.00000000000000001");
-        //     // assert_reflexive("360.000000000000000012");
-        //     // assert_reflexive("3600.000000000000000012");
-
-        //     // // edge cases: what if there are more than 19 decimal digits stored
-        //     // // in the low bits?
-        //     // assert_reflexive("360.9999999999999999999");
-        //     // assert_reflexive("361.0");
-        //     // assert_reflexive("361.0000000000000000001");
-        //     // assert_reflexive("361.0000000000000000042");
-        //     // assert_reflexive(&format!("361.{}", u64::MAX - RocDec::DECIMAL_MAX));
-        //     // assert_reflexive("9223372036854775807.0");
-        //     // assert_reflexive("-9223372036854775808.0");
-        //     // assert_reflexive("9223372036854775808.8446744073709551615");
-        //     // assert_reflexive("-9223372036854775809.8446744073709551615");
+    fn zero_to_str() {
+        assert_eq!("0.0", RocDec(0).to_string());
     }
 
     #[test]
-    fn from_str() {
-        // // zero low bits
-        // assert_reflexive("0.0");
-        // assert_reflexive("1.0");
-        // assert_reflexive("-1.0");
-        // assert_reflexive("10.0");
-        // assert_reflexive("-10.0");
-        // assert_reflexive("360.0");
-        // assert_reflexive("-360.0");
-
-        // // different sized high bits and low bits
-        // assert_reflexive("0.0000000000000000001");
-        // assert_reflexive("360.0000000000000000001");
-        // assert_reflexive("360.00000000000000001");
-        // assert_reflexive("360.000000000000000012");
-        // assert_reflexive("3600.000000000000000012");
-
-        // // edge cases: what if there are more than 19 decimal digits stored
-        // // in the low bits?
-        // assert_reflexive("360.9999999999999999999");
-        // assert_reflexive("361.0");
-        // assert_reflexive("361.0000000000000000001");
-        // assert_reflexive("361.0000000000000000042");
-        // assert_reflexive(&format!("361.{}", u64::MAX - RocDec::DECIMAL_MAX));
-        // assert_reflexive("9223372036854775807.0");
-        // // assert_reflexive("-9223372036854775808.0"); // breaks!
-        // // assert_reflexive("9223372036854775808.8446744073709551610");
-        assert_reflexive("17014118346046923173.1687303715884105727");
-        // assert_reflexive("-17014118346046923173.1687303715884105728");
-
-        // TODO quickcheck test this, with negatives!!!
-    }
-
-    fn assert_add(dec1: &str, dec2: &str, expected: &str) {
-        let dec1: RocDec = dec1.try_into().unwrap();
-        let dec2: RocDec = dec2.try_into().unwrap();
-
-        assert_eq!(expected, dec1.add(dec2).to_string());
-    }
-
-    fn assert_sub(dec1: &str, dec2: &str, expected: &str) {
-        let dec1: RocDec = dec1.try_into().unwrap();
-        let dec2: RocDec = dec2.try_into().unwrap();
-
-        assert_eq!(expected, dec1.sub(dec2).to_string());
-    }
-
-    fn assert_mul(dec1: &str, dec2: &str, expected: &str) {
-        let dec1: RocDec = dec1.try_into().unwrap();
-        let dec2: RocDec = dec2.try_into().unwrap();
-
-        assert_eq!(expected, dec1.mul(dec2).to_string());
+    fn one_to_str() {
+        assert_eq!("1.0", RocDec(100000000000000000000).to_string());
     }
 
     #[test]
-    fn add() {
-        // integers
-        assert_add("0.0", "0.0", "0.0");
-        assert_add("360.0", "360.0", "720.0");
-        assert_add("123.0", "456.0", "579.0");
+    fn ten_to_str() {
+        assert_eq!("10.0", RocDec(1000000000000000000000).to_string());
+    }
 
-        // non-integers
-        assert_add("0.1", "0.2", "0.3");
-        assert_add(
-            "111.0000000000000000555",
-            "222.0000000000000000444",
-            "333.0000000000000000999",
+    #[test]
+    fn point_1_to_str() {
+        assert_eq!("0.1", RocDec(10000000000000000000).to_string());
+    }
+
+    #[test]
+    fn point_01_to_str() {
+        assert_eq!("0.01", RocDec(1000000000000000000).to_string());
+    }
+
+    #[test]
+    fn smallest_positive_to_str() {
+        assert_eq!("0.00000000000000000001", RocDec(1).to_string());
+    }
+
+    #[test]
+    fn i128_min_to_str() {
+        assert_eq!(
+            "-1701411834604692317.31687303715884105728",
+            RocDec(i128::MIN).to_string()
         );
     }
 
     #[test]
-    fn sub() {
-        // integers
-        assert_sub("0.0", "0.0", "0.0");
-        assert_sub("360.0", "360.0", "0.0");
-        assert_sub("123.0", "456.0", "-333.0");
-
-        // non-integers
-        assert_sub("0.3", "0.2", "0.1");
-        assert_sub(
-            "111.0000000000000000555",
-            "222.0000000000000000444",
-            "-111.0000000000000000111",
+    fn i128_almost_min_to_str() {
+        // i128::MIN is special-cased because transforming it into a u128
+        // would overflow, so make sure that i128::MAX + 1 works as expected!
+        assert_eq!(
+            "-1701411834604692317.31687303715884105727",
+            RocDec(i128::MIN + 1).to_string()
         );
     }
 
     #[test]
-    fn mul() {
-        // integers
-        assert_mul("0.0", "0.0", "0.0");
-        assert_mul("2.0", "3.0", "6.0");
-        assert_mul("-2.0", "3.0", "-6.0");
-        assert_mul("2.0", "-3.0", "-6.0");
-        assert_mul("-2.0", "-3.0", "6.0");
-        assert_mul("15.0", "74.0", "1110.0");
-        assert_mul("-15.0", "74.0", "-1110.0");
-        assert_mul("15.0", "-74.0", "-1110.0");
-        assert_mul("-15.0", "-74.0", "1110.0");
-
-        // non-integers
-        assert_mul("1.1", "2.2", "2.42");
-        assert_mul("-1.1", "-2.2", "2.42");
-        // assert_mul("1.1", "-2.2", "-2.42");
-        assert_mul("2.0", "1.5", "3.0");
-        assert_mul("2.3", "3.8", "8.74");
-        assert_mul("1.01", "7.02", "7.0902");
-        assert_mul("1.001", "7.002", "7.009002");
-        assert_mul("1.0001", "7.0002", "7.00090002");
-        assert_mul("1.00001", "7.00002", "7.0000900002");
-        assert_mul("1.000001", "7.000002", "7.000009000002");
-        assert_mul("1.0000001", "7.0000002", "7.00000090000002");
-        assert_mul("1.00000001", "7.00000002", "7.0000000900000002");
-        assert_mul("1.000000001", "7.000000002", "7.000000009000000002");
-        // assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
-        // assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
+    fn i128_max_to_str() {
+        assert_eq!(
+            "1701411834604692317.31687303715884105727",
+            RocDec(i128::MAX).to_string()
+        );
     }
+
+    #[test]
+    fn i128_almost_max_to_str() {
+        assert_eq!(
+            "1701411834604692317.31687303715884105726",
+            RocDec(i128::MAX - 1).to_string()
+        );
+    }
+
+    //     assert_eq!(RocDec(10000000000000000000).to_string(), "1.0");
+    //     assert_eq!(RocDec(-10000000000000000000).to_string(), "-1.0");
+    //     assert_eq!(RocDec(120000000000000000000).to_string(), "12.0");
+    //     assert_eq!(RocDec(-120000000000000000000).to_string(), "-12.0");
+    //     assert_eq!(RocDec(3650000000000000000000).to_string(), "365.0");
+    //     assert_eq!(RocDec(-3650000000000000000000).to_string(), "-365.0");
+
+    //     // // different sized high bits and low bits
+    //     // assert_reflexive("0.0000000000000000001");
+    //     // assert_reflexive("360.0000000000000000001");
+    //     // assert_reflexive("360.00000000000000001");
+    //     // assert_reflexive("360.000000000000000012");
+    //     // assert_reflexive("3600.000000000000000012");
+
+    //     // // edge cases: what if there are more than 19 decimal digits stored
+    //     // // in the low bits?
+    //     // assert_reflexive("360.9999999999999999999");
+    //     // assert_reflexive("361.0");
+    //     // assert_reflexive("361.0000000000000000001");
+    //     // assert_reflexive("361.0000000000000000042");
+    //     // assert_reflexive(&format!("361.{}", u64::MAX - RocDec::DECIMAL_MAX));
+    //     // assert_reflexive("9223372036854775807.0");
+    //     // assert_reflexive("-9223372036854775808.0");
+    //     // assert_reflexive("9223372036854775808.8446744073709551615");
+    //     // assert_reflexive("-9223372036854775809.8446744073709551615");
 }
+
+#[test]
+fn from_str() {
+    // // zero low bits
+    // assert_reflexive("0.0");
+    // assert_reflexive("1.0");
+    // assert_reflexive("-1.0");
+    // assert_reflexive("10.0");
+    // assert_reflexive("-10.0");
+    // assert_reflexive("360.0");
+    // assert_reflexive("-360.0");
+
+    // // different sized high bits and low bits
+    // assert_reflexive("0.0000000000000000001");
+    // assert_reflexive("360.0000000000000000001");
+    // assert_reflexive("360.00000000000000001");
+    // assert_reflexive("360.000000000000000012");
+    // assert_reflexive("3600.000000000000000012");
+
+    // // edge cases: what if there are more than 19 decimal digits stored
+    // // in the low bits?
+    // assert_reflexive("360.9999999999999999999");
+    // assert_reflexive("361.0");
+    // assert_reflexive("361.0000000000000000001");
+    // assert_reflexive("361.0000000000000000042");
+    // assert_reflexive(&format!("361.{}", u64::MAX - RocDec::DECIMAL_MAX));
+    // assert_reflexive("9223372036854775807.0");
+    // // assert_reflexive("-9223372036854775808.0"); // breaks!
+    // // assert_reflexive("9223372036854775808.8446744073709551610");
+    // assert_reflexive("17014118346046923173.1687303715884105727");
+    // assert_reflexive("-17014118346046923173.1687303715884105728");
+
+    // TODO quickcheck test this, with negatives!!!
+}
+
+// fn assert_add(dec1: &str, dec2: &str, expected: &str) {
+//     let dec1: RocDec = dec1.try_into().unwrap();
+//     let dec2: RocDec = dec2.try_into().unwrap();
+
+//     assert_eq!(expected, dec1.add(dec2).to_string());
+// }
+
+// fn assert_sub(dec1: &str, dec2: &str, expected: &str) {
+//     let dec1: RocDec = dec1.try_into().unwrap();
+//     let dec2: RocDec = dec2.try_into().unwrap();
+
+//     assert_eq!(expected, dec1.sub(dec2).to_string());
+// }
+
+// fn assert_mul(dec1: &str, dec2: &str, expected: &str) {
+//     let dec1: RocDec = dec1.try_into().unwrap();
+//     let dec2: RocDec = dec2.try_into().unwrap();
+
+//     assert_eq!(expected, dec1.mul(dec2).to_string());
+// }
+
+// #[test]
+// fn add() {
+//     // integers
+//     assert_add("0.0", "0.0", "0.0");
+//     assert_add("360.0", "360.0", "720.0");
+//     assert_add("123.0", "456.0", "579.0");
+
+//     // non-integers
+//     assert_add("0.1", "0.2", "0.3");
+//     assert_add(
+//         "111.0000000000000000555",
+//         "222.0000000000000000444",
+//         "333.0000000000000000999",
+//     );
+// }
+
+// #[test]
+// fn sub() {
+//     // integers
+//     assert_sub("0.0", "0.0", "0.0");
+//     assert_sub("360.0", "360.0", "0.0");
+//     assert_sub("123.0", "456.0", "-333.0");
+
+//     // non-integers
+//     assert_sub("0.3", "0.2", "0.1");
+//     assert_sub(
+//         "111.0000000000000000555",
+//         "222.0000000000000000444",
+//         "-111.0000000000000000111",
+//     );
+// }
+
+//     #[test]
+//     fn mul() {
+//         // integers
+//         assert_mul("0.0", "0.0", "0.0");
+//         assert_mul("2.0", "3.0", "6.0");
+//         assert_mul("-2.0", "3.0", "-6.0");
+//         assert_mul("2.0", "-3.0", "-6.0");
+//         assert_mul("-2.0", "-3.0", "6.0");
+//         assert_mul("15.0", "74.0", "1110.0");
+//         assert_mul("-15.0", "74.0", "-1110.0");
+//         assert_mul("15.0", "-74.0", "-1110.0");
+//         assert_mul("-15.0", "-74.0", "1110.0");
+
+//         // non-integers
+//         assert_mul("1.1", "2.2", "2.42");
+//         assert_mul("-1.1", "-2.2", "2.42");
+//         // assert_mul("1.1", "-2.2", "-2.42");
+//         assert_mul("2.0", "1.5", "3.0");
+//         assert_mul("2.3", "3.8", "8.74");
+//         assert_mul("1.01", "7.02", "7.0902");
+//         assert_mul("1.001", "7.002", "7.009002");
+//         assert_mul("1.0001", "7.0002", "7.00090002");
+//         assert_mul("1.00001", "7.00002", "7.0000900002");
+//         assert_mul("1.000001", "7.000002", "7.000009000002");
+//         assert_mul("1.0000001", "7.0000002", "7.00000090000002");
+//         assert_mul("1.00000001", "7.00000002", "7.0000000900000002");
+//         assert_mul("1.000000001", "7.000000002", "7.000000009000000002");
+//         // assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
+//         // assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
+//     }
+// }
 
 #[inline(always)]
 fn decimalize(num: u128) -> (u64, u64) {
