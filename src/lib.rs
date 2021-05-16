@@ -262,14 +262,10 @@ impl std::ops::Mul for RocDec {
     }
 }
 
-/// A fixed-point decimal value with 19 decimal places of precision.
+/// A fixed-point decimal value with 20 decimal places of precision.
 ///
-/// Why 19? Because 10^19 is the highest power of 10 that fits inside 2^64, and
-/// being able to fit all the decimal digits into one u64 makes some operations
-/// more efficient.
-///
-/// The lowest value it can store is -9223372036854775809.8446744073709551615
-/// and the highest is 9223372036854775808.8446744073709551615
+/// The lowest value it can store is -1701411834604692317.31687303715884105728
+/// and the highest is 1701411834604692317.31687303715884105727
 impl RocDec {
     pub const MIN: Self = Self(i128::MIN);
     pub const MAX: Self = Self(i128::MAX);
