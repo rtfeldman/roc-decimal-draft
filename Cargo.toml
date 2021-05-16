@@ -7,4 +7,5 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-decimal = "2"
+decimal = "2" # just for benchmarking
+ethnum = "1" # used for u256, which we use in multiplication
