@@ -122,8 +122,6 @@ impl std::ops::Mul for RocDec {
     type Output = Self;
 
     fn mul(self, other: Self) -> Self {
-        use ethnum::U256;
-
         let self_i128 = self.0;
         let other_i128 = other.0;
 
@@ -135,21 +133,125 @@ impl std::ops::Mul for RocDec {
         // it in terms of positives can cause bugs when one is zero.
         let is_answer_negative = self_i128.is_negative() != other_i128.is_negative();
 
-        let self_u256 = match self_i128.checked_abs() {
-            Some(answer) => U256::from_words(0, answer as u128),
-            None => U256::from_words(1, 0), // resolve the overflow
+        // Break the two i128s into two { hi: u64, lo: u64 } tuples, discarding
+        // the sign for now.
+        //
+        // We'll multiply all 4 combinations of these (hi1 x lo1, hi2 x lo2,
+        // hi1 x lo2, hi2 x lo1) and add them as appropriate, then apply the
+        // appropriate sign at the very end.
+        //
+        // We do checked_abs because if we had -i128::MAX before, this will overflow.
+        let (self_hi, self_lo) = match self_i128.checked_abs() {
+            Some(answer) => (
+                // hi (shift away the 64 low bits)
+                ((answer as u128 >> 64) as u64),
+                // lo (truncate the 64 high bits)
+                answer as u128 as u64,
+            ),
+            None => {
+                // Currently, if you try to do multiplication on i64::MIN, panic
+                // unless you're specifically multiplying by 0 or 1.
+                //
+                // Maybe we could support more cases in the future
+                if other_i128 == 0 {
+                    // Anything times 0 is 0
+                    return RocDec(0);
+                } else if other_i128 == 1 {
+                    // Anything times 1 is itself
+                    return self;
+                } else {
+                    todo!("TODO overflow!");
+                }
+            }
         };
 
-        let other_u256 = match other_i128.checked_abs() {
-            Some(answer) => U256::from_words(0, answer as u128),
-            None => U256::from_words(1, 0), // resolve the overflow
+        let (other_hi, other_lo) = match other_i128.checked_abs() {
+            Some(answer) => (
+                // hi (shift away the 64 low bits)
+                ((answer as u128 >> 64) as u64),
+                // lo (truncate the 64 high bits)
+                answer as u128 as u64,
+            ),
+            None => {
+                // Currently, if you try to do multiplication on i64::MIN, panic
+                // unless you're specifically multiplying by 0 or 1.
+                //
+                // Maybe we could support more cases in the future
+                if self_i128 == 0 {
+                    // Anything times 0 is 0
+                    return RocDec(0);
+                } else if self_i128 == 1 {
+                    // Anything times 1 is itself
+                    return other;
+                } else {
+                    todo!("TODO overflow!");
+                }
+            }
         };
+
+        // Algorithm based on "Multiplication of larger integers" from:
+        //
+        // https://bisqwit.iki.fi/story/howto/bitmath/#MulUnsignedMultiplication
+        //
+        // That's where all the super short variable names like "ea" come from.
+
+        // Impressively, this optimizes to the assembly instructions for
+        // doing a "multiply two 64-bit integers and store the result as a
+        // 128-bit integer" CPU instruction!
+        //
+        // https://godbolt.org/z/KnvchqP97
+        //
+        // Note that this cannot overflow; in fact, if you try to do an
+        // overflowing_mul here, it gets optimized away!
+        let ea = (self_lo as u128) * (other_lo as u128);
+
+        // We discard `a` because it's the lowest digit
+        let (e, _a) = decimalize(ea);
+
+        let gf = (self_hi as u128) * (other_lo as u128);
+        let (g, f) = decimalize(gf);
+
+        let jh = (self_lo as u128) * (other_hi as u128);
+        let (j, h) = decimalize(jh);
+
+        let lk = (self_hi as u128) * (other_hi as u128);
+        let (l, k) = decimalize(lk);
+
+        // b = e + f + h
+        let (e_plus_f, overflowed) = e.overflowing_add(f);
+        let b_carry1 = if overflowed { 1 } else { 0 };
+        let (b, overflowed) = e_plus_f.overflowing_add(h);
+        let b_carry2 = if overflowed { 1 } else { 0 };
+
+        // c = carry + g + j + k (the link doesn't mention +k but I think that's a typo)
+        let (g_plus_j, overflowed) = g.overflowing_add(j);
+        let c_carry1 = if overflowed { 1 } else { 0 };
+        let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k);
+        let c_carry2 = if overflowed { 1 } else { 0 };
+        let (c_without_bcarry2, overflowed) = g_plus_j_plus_k.overflowing_add(b_carry1);
+        let c_carry3 = if overflowed { 1 } else { 0 };
+        let (c, overflowed) = c_without_bcarry2.overflowing_add(b_carry2);
+        let c_carry4 = if overflowed { 1 } else { 0 };
+
+        // d = carry + l
+        let (d, overflowed1) = l.overflowing_add(c_carry1);
+        let (d, overflowed2) = d.overflowing_add(c_carry2);
+        let (d, overflowed3) = d.overflowing_add(c_carry3);
+        let (d, overflowed4) = d.overflowing_add(c_carry4);
 
         let unsigned_answer = {
-            // TODO check for overflow in high bits
-            self_u256 * other_u256 / U256::from_words(0, 10u128.pow(Self::DECIMAL_PLACES))
-        }
-        .as_i128();
+            let hi = if d == 0 // if d > 0, we overflowed
+                && !(overflowed1 || overflowed2 || overflowed3 || overflowed4)
+            {
+                ((c as u128) << 64) as i128
+            } else {
+                todo!("Overflow!");
+            };
+
+            let lo = b as i128;
+
+            hi + lo
+        };
 
         // This compiles to a cmov!
         if is_answer_negative {
