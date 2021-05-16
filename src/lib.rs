@@ -271,6 +271,9 @@ impl std::ops::Mul for RocDec {
 /// The lowest value it can store is -9223372036854775809.8446744073709551615
 /// and the highest is 9223372036854775808.8446744073709551615
 impl RocDec {
+    pub const MIN: Self = Self(i128::MIN);
+    pub const MAX: Self = Self(i128::MAX);
+
     /// The highest u64 where the first digit is 1 and every other digit is 0.
     pub const DECIMAL_PLACES: u32 = 20;
     const DECIMAL_MAX: i128 = i128::MAX - 10i128.pow(Self::DECIMAL_PLACES);
