@@ -156,7 +156,7 @@ impl std::ops::Mul for RocDec {
                 if other_i128 == 0 {
                     // Anything times 0 is 0
                     return RocDec(0);
-                } else if other_i128 == 1 {
+                } else if other_i128 == Self::ONE_POINT_ZERO {
                     // Anything times 1 is itself
                     return self;
                 } else {
@@ -180,7 +180,7 @@ impl std::ops::Mul for RocDec {
                 if self_i128 == 0 {
                     // Anything times 0 is 0
                     return RocDec(0);
-                } else if self_i128 == 1 {
+                } else if self_i128 == Self::ONE_POINT_ZERO {
                     // Anything times 1 is itself
                     return other;
                 } else {
@@ -273,6 +273,8 @@ impl RocDec {
     /// The highest u64 where the first digit is 1 and every other digit is 0.
     pub const DECIMAL_PLACES: u32 = 20;
     const DECIMAL_MAX: i128 = i128::MAX - 10i128.pow(Self::DECIMAL_PLACES);
+
+    const ONE_POINT_ZERO: i128 = 10i128.pow(Self::DECIMAL_PLACES);
 
     pub fn to_string(self) -> String {
         let self_i128 = self.0;
