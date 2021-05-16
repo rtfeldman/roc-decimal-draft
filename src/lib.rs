@@ -242,6 +242,9 @@ impl std::ops::Mul for RocDec {
         let unsigned_answer = {
             let hi = if d == 0 // if d > 0, we overflowed
                 && !(overflowed1 || overflowed2 || overflowed3 || overflowed4)
+                // if c > i64::MAX, it will overflow after we convert it
+                // to i128 and bit shift it
+                && c <= i64::MAX as u64
             {
                 ((c as u128) << 64) as i128
             } else {
