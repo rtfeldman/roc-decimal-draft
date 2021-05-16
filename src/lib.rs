@@ -144,17 +144,12 @@ impl std::ops::Mul for RocDec {
         //
         // We do checked_abs because if we had -i128::MAX before, this will overflow.
         let (self_hi, self_lo) = match self_i128.checked_abs() {
-            Some(answer) => {
-                println!("answer:        {:#0128b}", answer);
-                println!("answer >> 64:  {:#0128b}", ((answer as u128 >> 64) as u64));
-                println!("answer as u64: {:#0128b}", answer as u128 as u64);
-                (
-                    // hi (shift away the 64 low bits)
-                    ((answer as u128 >> 64) as u64),
-                    // lo (truncate the 64 high bits)
-                    answer as u128 as u64,
-                )
-            }
+            Some(answer) => (
+                // hi (shift away the 64 low bits)
+                ((answer as u128 >> 64) as u64),
+                // lo (truncate the 64 high bits)
+                answer as u128 as u64,
+            ),
             None => {
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
@@ -196,84 +191,53 @@ impl std::ops::Mul for RocDec {
             }
         };
 
-        // Algorithm based on "Multiplication of larger integers" from:
-        //
-        // https://bisqwit.iki.fi/story/howto/bitmath/#MulUnsignedMultiplication
-        //
-        // That's where all the super short variable names like "ea" come from.
-
-        // Impressively, this optimizes to the assembly instructions for
-        // doing a "multiply two 64-bit integers and store the result as a
-        // 128-bit integer" CPU instruction!
-        //
-        // https://godbolt.org/z/KnvchqP97
-        //
-        // Note that this cannot overflow; in fact, if you try to do an
-        // overflowing_mul here, it gets optimized away!
-        let ea = (self_lo as u128) * (other_lo as u128);
-
-        // We discard `a` because it's the lowest digit
-        let (e, _a) = decimalize(ea);
-
-        let gf = (self_hi as u128) * (other_lo as u128);
-        let (g, f) = decimalize(gf);
-
-        let jh = (self_lo as u128) * (other_hi as u128);
-        let (j, h) = decimalize(jh);
-
-        let lk = (self_hi as u128) * (other_hi as u128);
-        let (l, k) = decimalize(lk);
-
-        // b = e + f + h
-        let (e_plus_f, overflowed) = e.overflowing_add(f);
-        let b_carry1 = if overflowed { 1 } else { 0 };
-        let (b, overflowed) = e_plus_f.overflowing_add(h);
-        let b_carry2 = if overflowed { 1 } else { 0 };
-
-        // c = carry + g + j + k (the link doesn't mention +k but I think that's a typo)
-        let (g_plus_j, overflowed) = g.overflowing_add(j);
-        let c_carry1 = if overflowed { 1 } else { 0 };
-        let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k);
-        let c_carry2 = if overflowed { 1 } else { 0 };
-        let (c_without_bcarry2, overflowed) = g_plus_j_plus_k.overflowing_add(b_carry1);
-        let c_carry3 = if overflowed { 1 } else { 0 };
-        let (c, overflowed) = c_without_bcarry2.overflowing_add(b_carry2);
-        let c_carry4 = if overflowed { 1 } else { 0 };
-
-        // d = carry + l
-        let (d, overflowed1) = l.overflowing_add(c_carry1);
-        let (d, overflowed2) = d.overflowing_add(c_carry2);
-        let (d, overflowed3) = d.overflowing_add(c_carry3);
-        let (d, overflowed4) = d.overflowing_add(c_carry4);
-
-        println!("       {} {}", self_hi, self_lo);
-        println!("     x {} {}", other_hi, other_lo);
-        println!("     -----");
-        println!(" =     {} {}", e, _a);
-        println!("     {} {}", g, f);
-        println!("     {} {}", j, h);
-        println!(" + {} {}", l, k);
-        println!(" ------");
-        println!("   {} {} {} {}", d, c, b, _a);
-
-        dbg!("DCBA = {}{}{}{}", d, c, b, _a);
-
         let unsigned_answer = {
-            let hi = if d == 0 // if d > 0, we overflowed
-                && !(overflowed1 || overflowed2 || overflowed3 || overflowed4)
-                // if c > i64::MAX, it will overflow after we convert it
-                // to i128 and bit shift it
-                && c <= i64::MAX as u64
-            {
-                ((c as u128) << 64) as i128
-            } else {
+            let a = self_i128 as u128;
+            let b = other_i128 as u128;
+            let mut high;
+            let mut low;
+
+            const BITS_IN_DWORD_2: u32 = 64;
+            const LOWER_MASK: u128 = u128::MAX >> BITS_IN_DWORD_2;
+
+            low = (a & LOWER_MASK) * (b & LOWER_MASK);
+            let mut t = low >> BITS_IN_DWORD_2;
+            low &= LOWER_MASK;
+            t += (a >> BITS_IN_DWORD_2) * (b & LOWER_MASK);
+            low += (t & LOWER_MASK) << BITS_IN_DWORD_2;
+            high = t >> BITS_IN_DWORD_2;
+            t = low >> BITS_IN_DWORD_2;
+            low &= LOWER_MASK;
+            t += (b >> BITS_IN_DWORD_2) * (a & LOWER_MASK);
+            low += (t & LOWER_MASK) << BITS_IN_DWORD_2;
+            high += t >> BITS_IN_DWORD_2;
+            high += (a >> BITS_IN_DWORD_2) * (b >> BITS_IN_DWORD_2);
+
+            dbg!(low, high);
+
+            if high > 0 {
                 todo!("Overflow!");
-            };
+            }
 
-            let lo = b as i128;
-
-            hi + lo
+            low as i128
         };
+
+        // let unsigned_answer = {
+        //     let hi = if d == 0 // if d > 0, we overflowed
+        //         && !(overflowed1 || overflowed2 || overflowed3 || overflowed4)
+        //         // if c > i64::MAX, it will overflow after we convert it
+        //         // to i128 and bit shift it
+        //         && c <= i64::MAX as u64
+        //     {
+        //         ((c as u128) << 64) as i128
+        //     } else {
+        //         todo!("Overflow!");
+        //     };
+
+        //     let lo = b as i128;
+
+        //     hi + lo
+        // };
 
         // This compiles to a cmov!
         if is_answer_negative {
@@ -413,14 +377,6 @@ impl RocDec {
             }
         }
     }
-}
-
-#[inline(always)]
-fn decimalize(num: u128) -> (u64, u64) {
-    let hi = num / 10u128.pow(RocDec::DECIMAL_PLACES);
-    let lo = num % 10u128.pow(RocDec::DECIMAL_PLACES);
-
-    (hi as u64, lo as u64)
 }
 
 #[cfg(test)]
