@@ -484,10 +484,22 @@ mod tests {
     }
 
     #[test]
-    fn negate() {
+    fn neg_0() {
         assert_negated("0.0");
+    }
+
+    #[test]
+    fn neg_1() {
         assert_negated("1.0");
+    }
+
+    #[test]
+    fn neg_1pt1() {
         assert_negated("1.1");
+    }
+
+    #[test]
+    fn neg_minus_1pt1() {
         assert_negated("-1.1");
     }
 
