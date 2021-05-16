@@ -1,6 +1,10 @@
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct RocDec(i128);
 
+pub fn fuzz_new(num: i128) -> RocDec {
+    RocDec(num)
+}
+
 // The result of calling to_string() on RocDec(i128::MIN).
 // This is both a special case and also the longest to_string().
 static I128_MIN_STR: &str = "-1701411834604692317.31687303715884105728";
@@ -257,13 +261,13 @@ impl std::ops::Mul for RocDec {
 /// and the highest is 9223372036854775808.8446744073709551615
 impl RocDec {
     /// The highest u64 where the first digit is 1 and every other digit is 0.
-    const DECIMAL_PLACES: u32 = 20;
+    pub const DECIMAL_PLACES: u32 = 20;
     const DECIMAL_MAX: i128 = i128::MAX - 10i128.pow(Self::DECIMAL_PLACES);
 
     const BEFORE_POINT_MAX: i128 = 17014118346046923173;
     const BEFORE_POINT_MIN: i128 = -17014118346046923174;
 
-    fn to_string(self) -> String {
+    pub fn to_string(self) -> String {
         let self_i128 = self.0;
         let is_negative = self_i128.is_negative();
 
