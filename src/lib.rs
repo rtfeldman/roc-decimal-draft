@@ -125,8 +125,6 @@ impl std::ops::Mul for RocDec {
         let self_i128 = self.0;
         let other_i128 = other.0;
 
-        dbg!(self_i128, other_i128);
-
         // If they're both negative, or if neither is negative, the final answer
         // is positive or zero. If one is negative and the other isn't, the
         // final answer is negative (or zero, in which case final sign won't matter).
