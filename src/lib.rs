@@ -354,13 +354,14 @@ fn mul_and_decimalize(a: u128, b: u128) -> u128 {
     // Divide
 
     // Or just multiply by: ceil(2^321/10^20) then right shift 321 times.
-    // 4271974071841820164790043412339104229205409044713305539894083215644439451561281100045924173873152
+    // 42719740718418201647900434123391042292054090447133055398940832156444394515613
 
     if true {
         use ethnum::U256;
-        // This needs to do multiplication in away that expands,
+        // This needs to do multiplication in a way that expands,
         // since we throw away 321 bits we care only about the higher end, not lower.
         // So like need to do high low mult with 2 U256's and then bitshift.
+        // I bet this has a lot of room for multiplication optimization.
         let lhs_hi = U256::from_words(0, hi);
         let lhs_lo = U256::from_words(0, lo);
         let rhs_hi = U256::from_words(0, 0x5E72843249088D75447A5D8E535E7AC2u128);
