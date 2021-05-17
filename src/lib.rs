@@ -141,17 +141,8 @@ impl std::ops::Mul for RocDec {
         // appropriate sign at the very end.
         //
         // We do checked_abs because if we had -i128::MAX before, this will overflow.
-        let self_hi;
-        let self_lo;
-
-        // set self_hi and self_lo, or return early, or throw an exception.
-        match dbg!(self_i128.checked_abs()) {
-            Some(answer) => {
-                // hi (shift away the 64 low bits)
-                self_hi = answer >> 64 as u64;
-                // lo (truncate the 64 high bits)
-                self_lo = answer as u64;
-            }
+        let self_u128 = match self_i128.checked_abs() {
+            Some(answer) => answer as u128,
             None => {
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
@@ -169,17 +160,8 @@ impl std::ops::Mul for RocDec {
             }
         };
 
-        let other_hi;
-        let other_lo;
-
-        // set other_hi and other_lo, or return early, or throw an exception.
-        match dbg!(other_i128.checked_abs()) {
-            Some(answer) => {
-                // hi (shift away the 64 low bits)
-                other_hi = answer >> 64 as u64;
-                // lo (truncate the 64 high bits)
-                other_lo = answer as u64;
-            }
+        let other_u128 = match other_i128.checked_abs() {
+            Some(answer) => answer as u128,
             None => {
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
@@ -197,87 +179,8 @@ impl std::ops::Mul for RocDec {
             }
         };
 
-        dbg!((self_hi, self_lo));
-        dbg!((other_hi, other_lo));
-
-        // Algorithm based on "Multiplication of larger integers" from:
-        //
-        // https://bisqwit.iki.fi/story/howto/bitmath/#MulUnsignedMultiplication
-        //
-        // That's where all the super short variable names like "ea" come from.
-
-        // Impressively, this optimizes to the assembly instructions for
-        // doing a "multiply two 64-bit integers and store the result as a
-        // 128-bit integer" CPU instruction!
-        //
-        // https://godbolt.org/z/KnvchqP97
-        //
-        // Note that this cannot overflow; in fact, if you try to do an
-        // overflowing_mul here, it gets optimized away!
-        let ea = (self_lo as u128) * (other_lo as u128);
-
-        // We discard `a` because it's the lowest digit
-        let (e, _a) = decimalize(ea);
-
-        let gf = (self_hi as u128) * (other_lo as u128);
-        let (g, f) = decimalize(gf);
-
-        let jh = (self_lo as u128) * (other_hi as u128);
-        let (j, h) = decimalize(jh);
-
-        let lk = (self_hi as u128) * (other_hi as u128);
-        let (l, k) = decimalize(lk);
-
-        // b = e + f + h
-        let (e_plus_f, overflowed) = e.overflowing_add(f);
-        let b_carry1 = if overflowed { 1 } else { 0 };
-        let (b, overflowed) = e_plus_f.overflowing_add(h);
-        let b_carry2 = if overflowed { 1 } else { 0 };
-
-        // c = carry + g + j + k (the link doesn't mention +k but I think that's a typo)
-        let (g_plus_j, overflowed) = g.overflowing_add(j);
-        let c_carry1 = if overflowed { 1 } else { 0 };
-        let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k);
-        let c_carry2 = if overflowed { 1 } else { 0 };
-        let (c_without_bcarry2, overflowed) = g_plus_j_plus_k.overflowing_add(b_carry1);
-        let c_carry3 = if overflowed { 1 } else { 0 };
-        let (c, overflowed) = c_without_bcarry2.overflowing_add(b_carry2);
-        let c_carry4 = if overflowed { 1 } else { 0 };
-
-        // d = carry + l
-        let (d, overflowed1) = l.overflowing_add(c_carry1);
-        let (d, overflowed2) = d.overflowing_add(c_carry2);
-        let (d, overflowed3) = d.overflowing_add(c_carry3);
-        let (d, overflowed4) = d.overflowing_add(c_carry4);
-
-        println!("       {} {}", self_hi, self_lo);
-        println!("     x {} {}", other_hi, other_lo);
-        println!("     -----");
-        println!(" =     {} {}", e, _a);
-        println!("     {} {}", g, f);
-        println!("     {} {}", j, h);
-        println!(" + {} {}", l, k);
-        println!(" ------");
-        println!("   {} {} {} {}", d, c, b, _a);
-
-        dbg!("DCBA = {}{}{}{}", d, c, b, _a);
-
-        let unsigned_answer = {
-            let hi = if d == 0 // if d > 0, we overflowed
-                && !(overflowed1 || overflowed2 || overflowed3 || overflowed4)
-                // if c > i64::MAX, it will overflow after we convert it
-                // to i128 and bit shift it
-                && c <= i64::MAX as u64
-            {
-                ((c as u128) << 64) as i128
-            } else {
-                todo!("Overflow!");
-            };
-
-            let lo = b as i128;
-
-            hi + lo
-        };
+        let unsigned_answer = mul_and_decimalize(self_u128, other_u128) as i128;
+        // TODO make sure this actually fits in i128!
 
         // This compiles to a cmov!
         if is_answer_negative {
@@ -419,12 +322,163 @@ impl RocDec {
     }
 }
 
+/// Multiply two 128-bit ints and divide the result by 10^DECIMAL_PLACES
+///
+/// Adapted from https://github.com/nlordell/ethnum-rs
+/// Copyright (c) 2020 Nicholas Rodrigues Lordello
+/// Licensed under the Apache License version 2.0
 #[inline(always)]
-fn decimalize(num: u128) -> (u64, u64) {
-    let hi = num / 10u128.pow(RocDec::DECIMAL_PLACES);
-    let lo = num % 10u128.pow(RocDec::DECIMAL_PLACES);
+fn mul_and_decimalize(a: u128, b: u128) -> u128 {
+    // Multiply
+    let mut hi;
+    let mut lo;
 
-    (hi as u64, lo as u64)
+    const BITS_IN_DWORD_2: u32 = 64;
+    const LOWER_MASK: u128 = u128::MAX >> BITS_IN_DWORD_2;
+
+    lo = (a & LOWER_MASK) * (b & LOWER_MASK);
+    let mut t = lo >> BITS_IN_DWORD_2;
+    lo &= LOWER_MASK;
+    t += (a >> BITS_IN_DWORD_2) * (b & LOWER_MASK);
+    lo += (t & LOWER_MASK) << BITS_IN_DWORD_2;
+    hi = t >> BITS_IN_DWORD_2;
+    t = lo >> BITS_IN_DWORD_2;
+    lo &= LOWER_MASK;
+    t += (b >> BITS_IN_DWORD_2) * (a & LOWER_MASK);
+    lo += (t & LOWER_MASK) << BITS_IN_DWORD_2;
+    hi += t >> BITS_IN_DWORD_2;
+    hi += (a >> BITS_IN_DWORD_2) * (b >> BITS_IN_DWORD_2);
+
+    // Since we want to divide by 10^20, we can first bit shift by 2^5
+
+    // Divide
+
+    #[derive(Copy, Clone)]
+    struct U256 {
+        hi: u128,
+        lo: u128,
+    }
+
+    #[inline]
+    fn wrapping_sub(r: U256, a: U256) -> U256 {
+        let (lo, carry) = r.lo.overflowing_sub(a.lo);
+
+        U256 {
+            lo,
+            hi: r.hi.wrapping_sub(carry as _).wrapping_sub(a.hi),
+        }
+    }
+
+    const N_UDWORD_BITS: u32 = 128;
+    const N_UTWORD_BITS: u32 = 256;
+    const DENOM: u128 = 10u128.pow(RocDec::DECIMAL_PLACES);
+
+    if false {
+        use ethnum::U256;
+
+        return *(U256::from_words(hi, lo) / U256::from_words(0, DENOM)).low();
+    }
+
+    let mut q;
+    let mut r;
+    let mut sr: u32;
+
+    // special cases, X is unknown, K != 0
+    if hi == 0 {
+        // we know d.hi == 0, so:
+
+        // 0 X
+        // ---
+        // 0 X
+        return lo / DENOM;
+    }
+
+    // K X
+    // ---
+    // 0 K
+    sr = 1 + N_UDWORD_BITS + DENOM.leading_zeros() - (hi).leading_zeros();
+    // 2 <= sr <= N_UTWORD_BITS - 1
+    // q.all = n.all << (N_UTWORD_BITS - sr);
+    // r.all = n.all >> sr;
+    #[allow(clippy::comparison_chain)]
+    if sr == N_UDWORD_BITS {
+        q = U256 { hi: lo, lo: 0 };
+        r = U256 { hi: 0, lo: hi };
+    } else if sr < N_UDWORD_BITS {
+        /* 2 <= sr <= N_UDWORD_BITS - 1 */
+        q = U256 {
+            hi: lo << (N_UDWORD_BITS - sr),
+            lo: 0,
+        };
+        r = U256 {
+            hi: hi >> sr,
+            lo: (hi << (N_UDWORD_BITS - sr)) | (lo >> sr),
+        };
+    } else {
+        /* N_UDWORD_BITS + 1 <= sr <= N_UTWORD_BITS - 1 */
+        q = U256 {
+            hi: (hi << (N_UTWORD_BITS - sr)) | (lo >> (sr - N_UDWORD_BITS)),
+            lo: lo << (N_UTWORD_BITS - sr),
+        };
+        r = U256 {
+            hi: 0,
+            lo: hi >> (sr - N_UDWORD_BITS),
+        };
+    }
+
+    // Not a special case
+    // q and r are initialized with:
+    // q.all = n.all << (N_UTWORD_BITS - sr);
+    // r.all = n.all >> sr;
+    // 1 <= sr <= N_UTWORD_BITS - 1
+    let mut carry = 0u128;
+    while sr > 0 {
+        // r:q = ((r:q)  << 1) | carry
+        r.hi = (r.hi << 1) | (r.lo >> (N_UDWORD_BITS - 1));
+        r.lo = (r.lo << 1) | (q.hi >> (N_UDWORD_BITS - 1));
+        q.hi = (q.hi << 1) | (q.lo >> (N_UDWORD_BITS - 1));
+        q.lo = (q.lo << 1) | carry;
+        // carry = 0;
+        // if (r.all >= d.all)
+        // {
+        //     r.all -= d.all;
+        //      carry = 1;
+        // }
+        // NOTE: Modified from `(d - r - 1) >> (N_UTWORD_BITS - 1)` to be an
+        // **arithmetic** shift.
+        let s = {
+            let hi = wrapping_sub(
+                wrapping_sub(U256 { hi: 0, lo: DENOM }, r),
+                U256 { hi: 0, lo: 1 },
+            )
+            .hi;
+
+            U256 {
+                hi: 0,
+                lo: ((hi as i128) >> 127) as u128,
+            }
+        };
+
+        carry = s.lo & 1;
+        r = wrapping_sub(
+            r,
+            U256 {
+                hi: 0,
+                lo: DENOM & s.lo,
+            },
+        );
+
+        sr -= 1;
+    }
+
+    let final_hi = (q.hi << 1) | (q.lo >> (128 - 1));
+
+    if final_hi == 0 {
+        (q.lo << 1) | carry
+    } else {
+        // high bits of the u256 weren't empty!
+        todo!("Overflow!");
+    }
 }
 
 #[cfg(test)]
@@ -641,32 +695,32 @@ mod tests {
     #[test]
     fn mul() {
         // integers
-        // assert_mul("0.0", "0.0", "0.0");
-        // assert_mul("0.0003", "0.0002", "0.00000006");
+        assert_mul("0.0", "0.0", "0.0");
+        assert_mul("0.0003", "0.0002", "0.00000006");
         assert_mul("2.0", "3.0", "6.0");
-        // assert_mul("-2.0", "3.0", "-6.0");
-        // assert_mul("2.0", "-3.0", "-6.0");
-        // assert_mul("-2.0", "-3.0", "6.0");
-        // assert_mul("15.0", "74.0", "1110.0");
-        // assert_mul("-15.0", "74.0", "-1110.0");
-        // assert_mul("15.0", "-74.0", "-1110.0");
-        // assert_mul("-15.0", "-74.0", "1110.0");
+        assert_mul("-2.0", "3.0", "-6.0");
+        assert_mul("2.0", "-3.0", "-6.0");
+        assert_mul("-2.0", "-3.0", "6.0");
+        assert_mul("15.0", "74.0", "1110.0");
+        assert_mul("-15.0", "74.0", "-1110.0");
+        assert_mul("15.0", "-74.0", "-1110.0");
+        assert_mul("-15.0", "-74.0", "1110.0");
 
-        // // non-integers
-        // assert_mul("1.1", "2.2", "2.42");
-        // assert_mul("-1.1", "-2.2", "2.42");
-        // assert_mul("1.1", "-2.2", "-2.42");
-        // assert_mul("2.0", "1.5", "3.0");
-        // assert_mul("2.3", "3.8", "8.74");
-        // assert_mul("1.01", "7.02", "7.0902");
-        // assert_mul("1.001", "7.002", "7.009002");
-        // assert_mul("1.0001", "7.0002", "7.00090002");
-        // assert_mul("1.00001", "7.00002", "7.0000900002");
-        // assert_mul("1.000001", "7.000002", "7.000009000002");
-        // assert_mul("1.0000001", "7.0000002", "7.00000090000002");
-        // assert_mul("1.00000001", "7.00000002", "7.0000000900000002");
-        // assert_mul("1.000000001", "7.000000002", "7.000000009000000002");
-        // assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
-        // assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
+        // non-integers
+        assert_mul("1.1", "2.2", "2.42");
+        assert_mul("-1.1", "-2.2", "2.42");
+        assert_mul("1.1", "-2.2", "-2.42");
+        assert_mul("2.0", "1.5", "3.0");
+        assert_mul("2.3", "3.8", "8.74");
+        assert_mul("1.01", "7.02", "7.0902");
+        assert_mul("1.001", "7.002", "7.009002");
+        assert_mul("1.0001", "7.0002", "7.00090002");
+        assert_mul("1.00001", "7.00002", "7.0000900002");
+        assert_mul("1.000001", "7.000002", "7.000009000002");
+        assert_mul("1.0000001", "7.0000002", "7.00000090000002");
+        assert_mul("1.00000001", "7.00000002", "7.0000000900000002");
+        assert_mul("1.000000001", "7.000000002", "7.000000009000000002");
+        assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
+        assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
     }
 }
