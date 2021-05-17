@@ -330,8 +330,10 @@ impl RocDec {
 #[inline(always)]
 fn mul_and_decimalize(a: u128, b: u128) -> u128 {
     // Multiply
-    let mut hi;
-    let mut lo;
+
+    // The high and low bits of our u256 product
+    let mut hi: u128;
+    let mut lo: u128;
 
     const BITS_IN_DWORD_2: u32 = 64;
     const LOWER_MASK: u128 = u128::MAX >> BITS_IN_DWORD_2;
@@ -349,9 +351,14 @@ fn mul_and_decimalize(a: u128, b: u128) -> u128 {
     hi += t >> BITS_IN_DWORD_2;
     hi += (a >> BITS_IN_DWORD_2) * (b >> BITS_IN_DWORD_2);
 
-    // Since we want to divide by 10^20, we can first bit shift by 2^5
-
     // Divide
+
+    // Since we want to divide by 10^20, we can instead bit shift by 20 and then
+    // divide by 5^20 instead. (This is an inlined u256 shift right.)
+    hi = (hi >> RocDec::DECIMAL_PLACES) | (lo << (128 - RocDec::DECIMAL_PLACES));
+    lo = lo >> RocDec::DECIMAL_PLACES;
+
+    const DENOM: u128 = 5u128.pow(RocDec::DECIMAL_PLACES);
 
     #[derive(Copy, Clone)]
     struct U256 {
@@ -371,7 +378,6 @@ fn mul_and_decimalize(a: u128, b: u128) -> u128 {
 
     const N_UDWORD_BITS: u32 = 128;
     const N_UTWORD_BITS: u32 = 256;
-    const DENOM: u128 = 10u128.pow(RocDec::DECIMAL_PLACES);
 
     if false {
         use ethnum::U256;
