@@ -327,6 +327,7 @@ impl RocDec {
 /// Adapted from https://github.com/nlordell/ethnum-rs
 /// Copyright (c) 2020 Nicholas Rodrigues Lordello
 /// Licensed under the Apache License version 2.0
+#[inline(always)]
 fn mul_and_decimalize(a: u128, b: u128) -> u128 {
     // Multiply
     let mut hi;
