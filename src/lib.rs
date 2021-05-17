@@ -370,6 +370,12 @@ fn mul_and_decimalize(a: u128, b: u128) -> u128 {
     const N_UTWORD_BITS: u32 = 256;
     const DENOM: u128 = 10u128.pow(RocDec::DECIMAL_PLACES);
 
+    if false {
+        use ethnum::U256;
+
+        return *(U256::from_words(hi, lo) / U256::from_words(0, DENOM)).low();
+    }
+
     let mut q;
     let mut r;
     let mut sr: u32;
