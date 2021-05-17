@@ -699,23 +699,34 @@ mod tests {
     }
 
     #[test]
-    fn mul() {
-        // integers
+    fn mul_zero() {
         assert_mul("0.0", "0.0", "0.0");
+    }
+
+    #[test]
+    fn mul_small() {
         assert_mul("0.0003", "0.0002", "0.00000006");
+    }
+
+    #[test]
+    fn mul_positive_ints() {
         assert_mul("2.0", "3.0", "6.0");
+        assert_mul("15.0", "74.0", "1110.0");
+    }
+
+    #[test]
+    fn mul_negative_ints() {
         assert_mul("-2.0", "3.0", "-6.0");
         assert_mul("2.0", "-3.0", "-6.0");
         assert_mul("-2.0", "-3.0", "6.0");
-        assert_mul("15.0", "74.0", "1110.0");
         assert_mul("-15.0", "74.0", "-1110.0");
         assert_mul("15.0", "-74.0", "-1110.0");
         assert_mul("-15.0", "-74.0", "1110.0");
+    }
 
-        // non-integers
+    #[test]
+    fn mul_positive_non_ints() {
         assert_mul("1.1", "2.2", "2.42");
-        assert_mul("-1.1", "-2.2", "2.42");
-        assert_mul("1.1", "-2.2", "-2.42");
         assert_mul("2.0", "1.5", "3.0");
         assert_mul("2.3", "3.8", "8.74");
         assert_mul("1.01", "7.02", "7.0902");
@@ -726,6 +737,12 @@ mod tests {
         assert_mul("1.0000001", "7.0000002", "7.00000090000002");
         assert_mul("1.00000001", "7.00000002", "7.0000000900000002");
         assert_mul("1.000000001", "7.000000002", "7.000000009000000002");
+    }
+
+    #[test]
+    fn mul_negative_non_ints() {
+        assert_mul("-1.1", "-2.2", "2.42");
+        assert_mul("1.1", "-2.2", "-2.42");
         assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
         assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
     }
