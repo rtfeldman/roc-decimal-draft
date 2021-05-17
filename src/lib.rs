@@ -322,7 +322,7 @@ impl RocDec {
     }
 }
 
-/// Divide a "256-bit unsigned integer" by 10^DECIMAL_PLACES
+/// Multiply two 128-bit ints and divide the result by 10^DECIMAL_PLACES
 ///
 /// Adapted from https://github.com/nlordell/ethnum-rs
 /// Copyright (c) 2020 Nicholas Rodrigues Lordello
