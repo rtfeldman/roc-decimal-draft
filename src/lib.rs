@@ -1,13 +1,8 @@
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-pub struct RocDec(i128);
-
-pub fn fuzz_new(num: i128) -> RocDec {
-    RocDec(num)
+pub struct RocDec {
+    hi: i64, // high-order bits, including the sign
+    lo: u64, // low-order bits
 }
-
-// The result of calling to_string() on RocDec(i128::MIN).
-// This is both a special case and also the longest to_string().
-static I128_MIN_STR: &str = "-1701411834604692317.31687303715884105728";
 
 impl Into<String> for RocDec {
     fn into(self) -> String {
@@ -30,8 +25,8 @@ impl<'a> std::convert::TryFrom<&'a str> for RocDec {
         };
 
         let after_point = match parts.next() {
-            Some(answer) if answer.len() <= Self::DECIMAL_PLACES as usize => answer,
-            _ => {
+            Some(answer) => answer,
+            None => {
                 return Err(());
             }
         };
@@ -41,48 +36,41 @@ impl<'a> std::convert::TryFrom<&'a str> for RocDec {
             return Err(());
         }
 
-        // Calculate the low digits - the ones after the decimal point.
-        let lo = match after_point.parse::<i128>() {
-            Ok(answer) => {
-                // Translate e.g. the 1 from 0.1 into 10000000000000000000
-                // by "restoring" the elided trailing zeroes to the number!
-                let trailing_zeroes = Self::DECIMAL_PLACES as usize - after_point.len();
-                let lo = answer * 10i128.pow(trailing_zeroes as u32);
-
-                if !before_point.starts_with("-") {
-                    lo
-                } else {
-                    -lo
-                }
-            }
+        // The low bits need padding to parse.
+        // TODO don't pad zeroes using format!() - unnecessary allocation!
+        let lo = match format!("{:0<19}", after_point).parse::<u64>() {
+            Ok(answer) => answer,
             Err(_) => {
                 return Err(());
             }
         };
 
-        // Calculate the high digits - the ones before the decimal point.
-        match before_point.parse::<i128>() {
-            Ok(answer) => match answer.checked_mul(10i128.pow(Self::DECIMAL_PLACES)) {
-                Some(hi) => match hi.checked_add(lo) {
-                    Some(num) => Ok(RocDec(num)),
-                    None => Err(()),
-                },
-                None => Err(()),
-            },
-            Err(_) => Err(()),
-        }
-    }
-}
-
-impl std::ops::Neg for RocDec {
-    type Output = Self;
-
-    #[inline(always)]
-    fn neg(self) -> Self::Output {
-        match self.0.checked_neg() {
-            Some(answer) => RocDec(answer),
-            None => {
-                todo!("throw exception");
+        match before_point.parse::<i64>() {
+            Ok(hi) => Ok(RocDec { hi, lo }),
+            Err(_) => {
+                match before_point {
+                    // This is a special case that's allowed - it's one lower than i64::MIN.
+                    "-9223372036854775809" => {
+                        //
+                        // Move the bottom digit into the low bits,
+                        // by setting hi to i64::MIN and adding DECIMAL_MAX to lo
+                        match lo.checked_add(RocDec::DECIMAL_MAX) {
+                            Some(lo) => Ok(RocDec { hi: i64::MIN, lo }),
+                            None => Err(()),
+                        }
+                    }
+                    // This is another special case that's allowed - it's one higher than i64::MAX.
+                    "9223372036854775808" => {
+                        // Move the bottom digit into the low bits,
+                        // by setting hi to i64::MIN and adding DECIMAL_MAX to lo
+                        match lo.checked_add(RocDec::DECIMAL_MAX) {
+                            Some(lo) => Ok(RocDec { hi: i64::MAX, lo }),
+                            None => Err(()),
+                        }
+                    }
+                    // No special case applied; this is an ordinary failed parse
+                    _ => Err(()),
+                }
             }
         }
     }
@@ -91,30 +79,110 @@ impl std::ops::Neg for RocDec {
 impl std::ops::Add for RocDec {
     type Output = Self;
 
-    #[inline(always)]
     fn add(self, other: Self) -> Self {
-        let (answer, overflowed) = self.0.overflowing_add(other.0);
+        // Care has been taken to make this branchless by using cmov conditionals
+        // only. The result is that it does a couple of operations that
+        // wouldn't be necessary otherwise (specifically doing both an
+        // overflowing_add and overflowing_sub due to not knowing which will be
+        // needed), but overall this means there will never be any dramatic
+        // variations in performance because of branch mispredictions, and that
+        // it will be faster on average across all invocations.
+        let other_hi = other.hi;
+        let other_lo = other.lo;
+        let self_hi = self.hi;
+        let self_lo = self.lo;
+        let self_is_positive = self_hi.is_positive();
+        let other_is_positive = other_hi.is_positive();
 
-        if !overflowed {
-            RocDec(answer)
-        } else {
-            todo!("throw an exception");
+        // Unfortunately, since these are u64 values, we actually need to
+        // (situationally) do a subtraction instruction here. We can't just
+        // negate them, because they might be too big to fit in an i64.
+        //
+        // To avoid branch mispredictions, we do both the add as well as
+        // the sub operation. This means we're always paying +1 cycle, but
+        // that's better than sometimes paying 0 and other times paying many.
+        let (lo_added, add_overflowed) = self_lo.overflowing_add(other_lo);
+        let (lo_subtracted, sub_overflowed) = self_lo.overflowing_sub(other_lo);
+        let same_sign = self_is_positive == other_is_positive;
+        let lo = if same_sign { lo_added } else { lo_subtracted };
+        let hi_offset = {
+            let hi_sign: i64 = if self_is_positive { 1 } else { -1 };
+            let overflowed = if same_sign {
+                add_overflowed
+            } else {
+                sub_overflowed
+            };
+
+            if overflowed {
+                hi_sign
+            } else {
+                0
+            }
+        };
+
+        let (hi, overflowed2) = self_hi.overflowing_add(hi_offset);
+        let (hi, overflowed3) = hi.overflowing_add(other_hi);
+
+        if overflowed2 || overflowed3 {
+            todo!("TODO throw an error for overflow");
         }
+
+        RocDec { hi, lo }
     }
 }
 
 impl std::ops::Sub for RocDec {
     type Output = Self;
 
-    #[inline(always)]
     fn sub(self, other: Self) -> Self {
-        let (answer, overflowed) = self.0.overflowing_sub(other.0);
+        // Care has been taken to make this branchless by using cmov conditionals
+        // only. The result is that it does a couple of operations that
+        // wouldn't be necessary otherwise (specifically doing both an
+        // overflowing_add and overflowing_sub due to not knowing which will be
+        // needed), but overall this means there will never be any dramatic
+        // variations in performance because of branch mispredictions, and that
+        // it will be faster on average across all invocations.
+        let other_hi = other.hi;
+        let other_lo = other.lo;
+        let self_hi = self.hi;
+        let self_lo = self.lo;
+        let self_is_positive = self_hi.is_positive();
+        let other_is_positive = other_hi.is_positive();
 
-        if !overflowed {
-            RocDec(answer)
-        } else {
-            todo!("throw an exception");
+        // Unfortunately, since these are u64 values, we actually need to
+        // (situationally) do a subtraction instruction here. We can't just
+        // negate them, because they might be too big to fit in an i64.
+        //
+        // To avoid branch mispredictions, we do both the add as well as
+        // the sub operation. This means we're always paying +1 cycle, but
+        // that's better than sometimes paying 0 and other times paying many.
+        let (lo_added, add_overflowed) = self_lo.overflowing_add(other_lo);
+        let (lo_subtracted, sub_overflowed) = self_lo.overflowing_sub(other_lo);
+        let same_sign = self_is_positive == other_is_positive;
+        let lo = if same_sign { lo_subtracted } else { lo_added };
+        let hi_offset = {
+            let hi_sign: i64 = if self_is_positive { 1 } else { -1 };
+            let overflowed = if same_sign {
+                sub_overflowed
+            } else {
+                add_overflowed
+            };
+
+            if overflowed {
+                hi_sign
+            } else {
+                0
+            }
+        };
+
+        let (hi, overflowed2) = self_hi.overflowing_sub(hi_offset);
+        let (hi, overflowed3) = hi.overflowing_sub(other_hi);
+
+        if overflowed2 || overflowed3 {
+            todo!("TODO throw an error for overflow");
         }
+
+        RocDec { hi, lo }
     }
 }
 
@@ -122,368 +190,248 @@ impl std::ops::Mul for RocDec {
     type Output = Self;
 
     fn mul(self, other: Self) -> Self {
-        let self_i128 = self.0;
-        let other_i128 = other.0;
+        let other_hi = other.hi;
+        let other_lo = other.lo;
+        let self_hi = self.hi;
+        let self_lo = self.lo;
 
         // If they're both negative, or if neither is negative, the final answer
         // is positive or zero. If one is negative and the other isn't, the
         // final answer is negative (or zero, in which case final sign won't matter).
         //
         // It's important that we do this in terms of negatives, because doing
-        // it in terms of positives can cause bugs when one is zero.
-        let is_answer_negative = self_i128.is_negative() != other_i128.is_negative();
+        // it in terms of positives instead causes bugs when both are 0.
+        let final_is_negative = self_hi.is_negative() != other_hi.is_negative();
 
-        // Break the two i128s into two { hi: u64, lo: u64 } tuples, discarding
-        // the sign for now.
-        //
-        // We'll multiply all 4 combinations of these (hi1 x lo1, hi2 x lo2,
-        // hi1 x lo2, hi2 x lo1) and add them as appropriate, then apply the
-        // appropriate sign at the very end.
-        //
-        // We do checked_abs because if we had -i128::MAX before, this will overflow.
-        let self_u128 = match self_i128.checked_abs() {
-            Some(answer) => answer as u128,
+        let self_hi = match self_hi.checked_abs() {
+            Some(answer) => answer as u64,
             None => {
+                // TODO try to support some of these cases maybe?
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
-                //
-                // Maybe we could support more cases in the future
-                if other_i128 == 0 {
-                    // Anything times 0 is 0
-                    return RocDec(0);
-                } else if other_i128 == Self::ONE_POINT_ZERO {
-                    // Anything times 1 is itself
-                    return self;
+                if other_hi == 0 && other_lo == 0 {
+                    return RocDec { hi: 0, lo: 0 };
+                } else if other_hi == 1 && other_lo == 0 {
+                    return RocDec { hi: self_hi, lo: 0 };
                 } else {
                     todo!("TODO overflow!");
                 }
             }
         };
 
-        let other_u128 = match other_i128.checked_abs() {
-            Some(answer) => answer as u128,
+        let other_hi = match other_hi.checked_abs() {
+            Some(answer) => answer as u64,
             None => {
+                // TODO try to support some of these cases maybe?
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
-                //
-                // Maybe we could support more cases in the future
-                if self_i128 == 0 {
-                    // Anything times 0 is 0
-                    return RocDec(0);
-                } else if self_i128 == Self::ONE_POINT_ZERO {
-                    // Anything times 1 is itself
-                    return other;
+                if self_hi == 0 && self_lo == 0 {
+                    return RocDec { hi: 0, lo: 0 };
+                } else if self_hi == 1 && self_lo == 0 {
+                    return RocDec {
+                        hi: other_hi,
+                        lo: 0,
+                    };
                 } else {
                     todo!("TODO overflow!");
                 }
             }
         };
 
-        let unsigned_answer = mul_and_decimalize(self_u128, other_u128) as i128;
-        // TODO make sure this actually fits in i128!
+        // Algorithm based on "Multiplication of larger integers" from:
+        //
+        // https://bisqwit.iki.fi/story/howto/bitmath/#MulUnsignedMultiplication
+        //
+        // That's where all the super short variable names like "ea" come from.
+
+        // Impressively, this optimizes to the assembly instructions for
+        // doing a "multiply two 64-bit integers and store the result as a
+        // 128-bit integer" CPU instruction!
+        //
+        // https://godbolt.org/z/KnvchqP97
+        //
+        // Note that this cannot overflow; in fact, if you try to do an
+        // overflowing_mul here, it gets optimized away!
+        let ea = (self_lo as u128) * (other_lo as u128);
+
+        // dbg!(ea);
+        // println!("EA:\n{:#0128b}", ea);
+
+        let (e, a) = decimalize(ea);
+
+        // println!("e a:\n{:#064b}{:#064b}", e, a);
+
+        let gf = (self_hi as u128) * (other_lo as u128);
+        let (g, f) = decimalize(gf);
+
+        let jh = (self_lo as u128) * (other_hi as u128);
+        let (j, h) = decimalize(jh);
+
+        let lk = (self_hi as u128) * (other_hi as u128);
+        let (l, k) = decimalize(lk);
+
+        //         println!("* self = hi {} lo {}", self_hi, self_lo);
+        //         println!("* other = hi {} lo {}", other_hi, other_lo);
+
+        //         println!(
+        //             "* * * EA {} {} GF {} {} JH {} {} LK {} {}",
+        //             e, a, g, f, j, h, l, k
+        //         );
+
+        // b = e + f + h
+        let (e_plus_f, overflowed) = e.overflowing_add(f);
+        let b_carry1 = if overflowed { 1 } else { 0 };
+        let (b, overflowed) = e_plus_f.overflowing_add(h);
+        let b_carry2 = if overflowed { 1 } else { 0 };
+
+        // c = carry + g + j + k // it doesn't say +k but I think it should be?
+        let (g_plus_j, overflowed) = g.overflowing_add(j);
+        let c_carry1 = if overflowed { 1 } else { 0 };
+        let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k); // it doesn't say +k but I think it should be?
+        let c_carry2 = if overflowed { 1 } else { 0 };
+        let (c_without_bcarry2, overflowed) = g_plus_j_plus_k.overflowing_add(b_carry1);
+        let c_carry3 = if overflowed { 1 } else { 0 };
+        let (c, overflowed) = c_without_bcarry2.overflowing_add(b_carry2);
+        let c_carry4 = if overflowed { 1 } else { 0 };
+
+        // d = carry + l
+        let (d, overflowed1) = l.overflowing_add(c_carry1);
+        let (d, overflowed2) = d.overflowing_add(c_carry2);
+        let (d, overflowed3) = d.overflowing_add(c_carry3);
+        let (d, overflowed4) = d.overflowing_add(c_carry4);
+
+        // println!("    {}.{}", self_hi, self_lo);
+        // println!("  x {}.{}", other_hi, other_lo);
+        // println!("  -----");
+        // println!(" =   {}{}", e, a);
+        // println!("    {}{}", g, f);
+        // println!("    {}{}", j, h);
+        // println!(" + {}{}", l, k);
+        // println!(" ------");
+        // println!("   {}{}{}{}", d, c, b, a);
+
+        //         println!("       {} {}", self_hi, self_lo);
+        //         println!("     x {} {}", other_hi, other_lo);
+        //         println!("     -----");
+        //         println!(" =     {} {}", e, a);
+        //         println!("     {} {}", g, f);
+        //         println!("     {} {}", j, h);
+        //         println!(" + {} {}", l, k);
+        //         println!(" ------");
+        //         println!("   {} {} {} {}", d, c, b, a);
+
+        //         dbg!("DCBA = {}{}{}{}", d, c, b, a);
+
+        // Since this is decimal multiplication, we "bit shift away" the lowest digits.
+        let hi = if c <= i64::MAX as u64
+            && d == 0
+            && !(overflowed1 || overflowed2 || overflowed3 || overflowed4)
+        {
+            c as i64
+        } else {
+            todo!("Overflow!");
+        };
 
         // This compiles to a cmov!
-        if is_answer_negative {
-            RocDec(-unsigned_answer)
-        } else {
-            RocDec(unsigned_answer)
-        }
+        let hi = if final_is_negative { -hi } else { hi };
+
+        let lo = b;
+
+        RocDec { hi, lo }
     }
 }
 
-/// A fixed-point decimal value with 20 decimal places of precision.
+/// A fixed-point decimal value with 19 decimal places of precision.
 ///
-/// The lowest value it can store is -1701411834604692317.31687303715884105728
-/// and the highest is 1701411834604692317.31687303715884105727
+/// Why 19? Because 10^19 is the highest power of 10 that fits inside 2^64, and
+/// being able to fit all the decimal digits into one u64 makes some operations
+/// more efficient.
+///
+/// The lowest value it can store is -9223372036854775809.8446744073709551615
+/// and the highest is 9223372036854775808.8446744073709551615
 impl RocDec {
-    pub const MIN: Self = Self(i128::MIN);
-    pub const MAX: Self = Self(i128::MAX);
+    /// The highest u64 where the first digit is 1 and every other digit is 0.
+    const DECIMAL_MAX: u64 = 10_000_000_000_000_000_000;
 
-    pub const DECIMAL_PLACES: u32 = 20;
-
-    const ONE_POINT_ZERO: i128 = 10i128.pow(Self::DECIMAL_PLACES);
+    pub fn new(hi: i64, lo: u64) -> Self {
+        RocDec { hi, lo }
+    }
 
     pub fn to_string(self) -> String {
-        let self_i128 = self.0;
-        let is_negative = self_i128.is_negative();
+        let hi = self.hi;
+        let lo = self.lo;
 
-        match self_i128.checked_abs() {
-            Some(answer) => {
-                if answer == 0 {
-                    return "0.0".to_string();
-                }
+        // Next, we want to compute the number before the decimal point
+        // and the number after the decimal point. hi and lo are almost there,
+        // but not quite - because lo is supposed to hold 19 digits, but it can
+        // potentially be higher than 19 nines. If it is, then:
+        //
+        // * we subtract (nineteen nines + 1) from lo
+        // * we increase hi by 1
+        //
+        // At this point we now have hi being the full number before the decimal
+        // point, and lo being the full number after the decimal point. We know
+        // hi won't overflow from the increment, because we just changed it from
+        // i64 to u64.
 
-                let mut self_u128 = answer as u128;
+        // If lo is at least DECIMAL_MAX, then drop it down to all 9s (or lower)
+        // by incrementing hi and subtracting DECIMAL_MAX from lo.
+        let lo_offset = if lo >= Self::DECIMAL_MAX {
+            Self::DECIMAL_MAX
+        } else {
+            0
+        };
+        let after_point = lo - lo_offset; // either the same or decreased by DECIMAL_MAX
 
-                // I128_MIN_STR has the longest possible length of one of these.
-                // This ensures we will not need to reallocate.
-                //
-                // TODO do this with a RocStr, and don't allocate on the heap
-                // until we've run out of stack bytes for a small str.
-                let mut string = String::with_capacity(I128_MIN_STR.len());
-                let mut display_zeroes = false;
-                let mut decimal_places_used = 0;
+        // TODO assuming lo needs all 19 digits, what's the highest hi
+        // we can have that will fit in 24B, accounting for the minus sign
+        // (if applicable) and the dot? What about 32B?
+        let mut buf = String::with_capacity(64);
 
-                // The number has at least one nonzero digit before the
-                // decimal point, so we don't need to pad the rest with 0s.
-                while self_u128 != 0 {
-                    // Get the last digit of the number and convert it to ASCII.
-                    let rem = (self_u128 % 10) as u8;
-                    let ascii_byte = rem + if rem > 9 { b'a' - 10 } else { b'0' };
+        // TODO switch to RocStr and account for small string optimization
+        if hi.is_positive() {
+            // It's positive, so casting to u64 is a no-op.
+            // We need to cast to u64, because if it was previously isize::MAX,
+            // we could potentially get signed integer overflow!
+            let hi_offset: u64 = if lo_offset == 0 { 0 } else { 1 };
+            let before_point = hi as u64 + hi_offset;
 
-                    // Only print zeroes if display_zeroes is set,
-                    // but always print non-zeroes.
-                    if display_zeroes || ascii_byte != b'0' {
-                        string.push(ascii_byte as char);
+            // TODO do all this string logic without new allocations
+            buf.push_str(&before_point.to_string());
+        } else if hi != i64::MIN {
+            // Since hi is not i64::MIN, we can (branchlessly) potentially
+            // subtract 1 from it without any possibility of overflow.
+            let hi_offset: u64 = if lo_offset == 0 { 0 } else { 1 };
+            let before_point = hi - hi_offset as i64;
 
-                        // As soon as we hit our first nonzero number,
-                        // we should start showing zeroes from then on.
-                        // (All the others are potentially trailing zeroes.)
-                        display_zeroes = true;
-                    }
+            // TODO do all this string logic without new allocations
+            buf.push_str(&before_point.to_string());
+        } else {
+            // we're in the highly uncommon edge case where hi == i64::MIN,
+            // which needs special-casing to avoid overflow.
 
-                    self_u128 = self_u128 / 10;
-
-                    // Increment this even if we didn't push anything onto the string!
-                    // Later on, this tells us how many zeroes to use for padding.
-                    decimal_places_used += 1;
-
-                    // If we've used all our decimal places, it's now time to
-                    // add the dot.
-                    if decimal_places_used == Self::DECIMAL_PLACES {
-                        // If we're about to end the loop, push the decimal
-                        // point folloewd by the 0 we need, and break early.
-                        if self_u128 == 0 {
-                            string.push_str(".0");
-                            break;
-                        }
-
-                        // display_zeroes would only be false here if we had
-                        // seen only (trailing, unnecessary) zeroes so far.
-                        if !display_zeroes {
-                            // Since we had all zeroes after the decimal point
-                            // put a single 0 in there so the final string will
-                            // end in ".0" instead of in "."
-                            // (after reversing, of course).
-                            string.push('0');
-                        }
-
-                        string.push('.');
-
-                        // After the dot, display all zeroes.
-                        // (Otherwise we would incorrectly display `100` as `1`)
-                        display_zeroes = true;
-                    }
-                }
-
-                if decimal_places_used < Self::DECIMAL_PLACES {
-                    // We ended without having emitted a dot, so print out
-                    // some zeroes as padding and then add a dot and a zero.
-                    // (Remember, these will get reversed! This adds "0." to
-                    // the beginning of the string, and then a bunch of zeroes
-                    // after the dot.)
-                    for _ in 0..(Self::DECIMAL_PLACES - decimal_places_used) {
-                        string.push('0');
-                    }
-
-                    string.push_str(".0");
-                }
-
-                // If number is negative, append '-'
-                if is_negative {
-                    string.push('-');
-                }
-
-                // Reverse the string's bytes in place. We can do this byte-wise
-                // because we know for sure they are all ASCII characters.
-                //
-                // Algorithm based on https://stackoverflow.com/a/65703808
-                let mut remaining = unsafe { string.as_bytes_mut() };
-
-                loop {
-                    match remaining {
-                        [] | [_] => break,
-                        [first, rest @ .., last] => {
-                            std::mem::swap(first, last);
-
-                            remaining = rest;
-                        }
-                    }
-                }
-
-                string
-            }
-            None => {
-                // if it was exactly i128::MIN, then taking its absolute value
-                // is impossible to represent...but we also know the exact str:
-                I128_MIN_STR.to_string()
+            if lo_offset == 0 {
+                // lo did not overflow, so we can just use i64::MIN
+                buf.push_str("-9223372036854775808");
+            } else {
+                // This is 1 lower than i64::MIN, which would overflow if
+                // we tried to store it as an i64 in memory, but which is fine
+                // as long as we push it directly into the string.
+                buf.push_str("-9223372036854775809");
             }
         }
-    }
-}
 
-/// Multiply two 128-bit ints and divide the result by 10^DECIMAL_PLACES
-///
-/// Adapted from https://github.com/nlordell/ethnum-rs
-/// Copyright (c) 2020 Nicholas Rodrigues Lordello
-/// Licensed under the Apache License version 2.0
-#[inline(always)]
-fn mul_and_decimalize(a: u128, b: u128) -> u128 {
-    // Multiply
-
-    // The high and low bits of our u256 product
-    let mut hi: u128;
-    let mut lo: u128;
-
-    const BITS_IN_DWORD_2: u32 = 64;
-    const LOWER_MASK: u128 = u128::MAX >> BITS_IN_DWORD_2;
-
-    lo = (a & LOWER_MASK) * (b & LOWER_MASK);
-    let mut t = lo >> BITS_IN_DWORD_2;
-    lo &= LOWER_MASK;
-    t += (a >> BITS_IN_DWORD_2) * (b & LOWER_MASK);
-    lo += (t & LOWER_MASK) << BITS_IN_DWORD_2;
-    hi = t >> BITS_IN_DWORD_2;
-    t = lo >> BITS_IN_DWORD_2;
-    lo &= LOWER_MASK;
-    t += (b >> BITS_IN_DWORD_2) * (a & LOWER_MASK);
-    lo += (t & LOWER_MASK) << BITS_IN_DWORD_2;
-    hi += t >> BITS_IN_DWORD_2;
-    hi += (a >> BITS_IN_DWORD_2) * (b >> BITS_IN_DWORD_2);
-
-    // Divide
-
-    // Since we want to divide by 10^20, we can instead bit shift by 20 and then
-    // divide by 5^20 instead. (This is an inlined u256 shift right.)
-    lo = (lo >> RocDec::DECIMAL_PLACES) | (hi << (128 - RocDec::DECIMAL_PLACES));
-    hi = hi >> RocDec::DECIMAL_PLACES;
-
-    const DENOM: u128 = 5u128.pow(RocDec::DECIMAL_PLACES);
-
-    #[derive(Copy, Clone)]
-    struct U256 {
-        hi: u128,
-        lo: u128,
-    }
-
-    #[inline]
-    fn wrapping_sub(r: U256, a: U256) -> U256 {
-        let (lo, carry) = r.lo.overflowing_sub(a.lo);
-
-        U256 {
-            lo,
-            hi: r.hi.wrapping_sub(carry as _).wrapping_sub(a.hi),
+        // TODO do all this by hand without more allocations or trim_matches()
+        if after_point == 0 {
+            // We special-case this because trim_matches would otherwise
+            // trim it down to a trailing '.' alone, which is not what we want!
+            buf.push_str(".0");
+        } else {
+            // pad zeroes and then trim trailing zeroes
+            buf.push_str(&format!(".{:0>19}", after_point.to_string()).trim_matches('0'));
         }
-    }
 
-    const N_UDWORD_BITS: u32 = 128;
-    const N_UTWORD_BITS: u32 = 256;
-
-    if false {
-        use ethnum::U256;
-
-        return *(U256::from_words(hi, lo) / U256::from_words(0, DENOM)).low();
-    }
-
-    let mut q;
-    let mut r;
-    let mut sr: u32;
-
-    // special cases, X is unknown, K != 0
-    if hi == 0 {
-        // we know d.hi == 0, so:
-
-        // 0 X
-        // ---
-        // 0 X
-        return lo / DENOM;
-    }
-
-    // K X
-    // ---
-    // 0 K
-    sr = 1 + N_UDWORD_BITS + DENOM.leading_zeros() - (hi).leading_zeros();
-    // 2 <= sr <= N_UTWORD_BITS - 1
-    // q.all = n.all << (N_UTWORD_BITS - sr);
-    // r.all = n.all >> sr;
-    #[allow(clippy::comparison_chain)]
-    if sr == N_UDWORD_BITS {
-        q = U256 { hi: lo, lo: 0 };
-        r = U256 { hi: 0, lo: hi };
-    } else if sr < N_UDWORD_BITS {
-        /* 2 <= sr <= N_UDWORD_BITS - 1 */
-        q = U256 {
-            hi: lo << (N_UDWORD_BITS - sr),
-            lo: 0,
-        };
-        r = U256 {
-            hi: hi >> sr,
-            lo: (hi << (N_UDWORD_BITS - sr)) | (lo >> sr),
-        };
-    } else {
-        /* N_UDWORD_BITS + 1 <= sr <= N_UTWORD_BITS - 1 */
-        q = U256 {
-            hi: (hi << (N_UTWORD_BITS - sr)) | (lo >> (sr - N_UDWORD_BITS)),
-            lo: lo << (N_UTWORD_BITS - sr),
-        };
-        r = U256 {
-            hi: 0,
-            lo: hi >> (sr - N_UDWORD_BITS),
-        };
-    }
-
-    // Not a special case
-    // q and r are initialized with:
-    // q.all = n.all << (N_UTWORD_BITS - sr);
-    // r.all = n.all >> sr;
-    // 1 <= sr <= N_UTWORD_BITS - 1
-    let mut carry = 0u128;
-    while sr > 0 {
-        // r:q = ((r:q)  << 1) | carry
-        r.hi = (r.hi << 1) | (r.lo >> (N_UDWORD_BITS - 1));
-        r.lo = (r.lo << 1) | (q.hi >> (N_UDWORD_BITS - 1));
-        q.hi = (q.hi << 1) | (q.lo >> (N_UDWORD_BITS - 1));
-        q.lo = (q.lo << 1) | carry;
-        // carry = 0;
-        // if (r.all >= d.all)
-        // {
-        //     r.all -= d.all;
-        //      carry = 1;
-        // }
-        // NOTE: Modified from `(d - r - 1) >> (N_UTWORD_BITS - 1)` to be an
-        // **arithmetic** shift.
-        let s = {
-            let hi = wrapping_sub(
-                wrapping_sub(U256 { hi: 0, lo: DENOM }, r),
-                U256 { hi: 0, lo: 1 },
-            )
-            .hi;
-
-            U256 {
-                hi: 0,
-                lo: ((hi as i128) >> 127) as u128,
-            }
-        };
-
-        carry = s.lo & 1;
-        r = wrapping_sub(
-            r,
-            U256 {
-                hi: 0,
-                lo: DENOM & s.lo,
-            },
-        );
-
-        sr -= 1;
-    }
-
-    let final_hi = (q.hi << 1) | (q.lo >> (128 - 1));
-
-    if final_hi == 0 {
-        (q.lo << 1) | carry
-    } else {
-        // high bits of the u256 weren't empty!
-        todo!("Overflow!");
+        buf
     }
 }
 
@@ -491,158 +439,73 @@ fn mul_and_decimalize(a: u128, b: u128) -> u128 {
 mod tests {
     use crate::RocDec;
     use std::convert::TryInto;
-    use std::ops::{Add, Mul, Neg, Sub};
+    use std::ops::{Add, Mul, Sub};
 
-    fn assert_reflexive(string: &str) {
-        let dec: RocDec = string.try_into().unwrap();
+    fn assert_reflexive(hi: i64, lo: u64, expected_str: &str) {
+        let dec = RocDec::new(hi, lo);
+        let string = dec.to_string();
 
-        // We should be able to convert it from a string back into this RocDec
-        assert_eq!(Ok(dec), dec.to_string().as_str().try_into());
-    }
+        assert_eq!(&string, expected_str);
 
-    fn assert_negated(string: &str) {
-        let dec: RocDec = string.try_into().unwrap();
-
-        assert_eq!(-dec, RocDec(-(dec.0)));
-
-        if dec.0 != 0 {
-            // If it wasn't 0.0, the sign should have changed!
-            assert_ne!(
-                dec.neg().to_string().starts_with("-"),
-                string.starts_with("-")
-            );
-        }
-
-        // After removing minus signs, both strings should be equal.
-        assert_eq!(string.replace("-", ""), (-dec).to_string().replace("-", ""));
-    }
-
-    #[test]
-    fn neg_0() {
-        assert_negated("0.0");
-    }
-
-    #[test]
-    fn neg_1() {
-        assert_negated("1.0");
-    }
-
-    #[test]
-    fn neg_1pt1() {
-        assert_negated("1.1");
-    }
-
-    #[test]
-    fn neg_minus_1pt1() {
-        assert_negated("-1.1");
-    }
-
-    #[test]
-    fn zero_to_str() {
-        assert_eq!("0.0", RocDec(0).to_string());
-    }
-
-    #[test]
-    fn one_to_str() {
-        assert_eq!("1.0", RocDec(100000000000000000000).to_string());
-    }
-
-    #[test]
-    fn ten_to_str() {
-        assert_eq!("10.0", RocDec(1000000000000000000000).to_string());
-    }
-
-    #[test]
-    fn point_1_to_str() {
-        assert_eq!("0.1", RocDec(10000000000000000000).to_string());
-    }
-
-    #[test]
-    fn point_01_to_str() {
-        assert_eq!("0.01", RocDec(1000000000000000000).to_string());
-    }
-
-    #[test]
-    fn smallest_positive_to_str() {
-        assert_eq!("0.00000000000000000001", RocDec(1).to_string());
-    }
-
-    #[test]
-    fn i128_min_to_str() {
+        // There's more than one way to represent a given string as a RocDec,
+        // but if we convert it into a RocDec and then back into a string again,
+        // it should be the same as the original string.
         assert_eq!(
-            "-1701411834604692317.31687303715884105728",
-            RocDec(i128::MIN).to_string()
+            Ok(RocDec::new(hi, lo).to_string()),
+            string.as_str().try_into().map(RocDec::to_string)
         );
     }
 
     #[test]
-    fn i128_almost_min_to_str() {
-        // i128::MIN is special-cased because transforming it into a u128
-        // would overflow, so make sure that i128::MAX + 1 works as expected!
-        assert_eq!(
-            "-1701411834604692317.31687303715884105727",
-            RocDec(i128::MIN + 1).to_string()
+    fn to_string() {
+        // zero low bits
+        assert_reflexive(0, 0, "0.0");
+        assert_reflexive(1, 0, "1.0");
+        assert_reflexive(-1, 0, "-1.0");
+        assert_reflexive(10, 0, "10.0");
+        assert_reflexive(-10, 0, "-10.0");
+        assert_reflexive(360, 0, "360.0");
+        assert_reflexive(-360, 0, "-360.0");
+
+        // different sized high bits and low bits
+        assert_reflexive(0, 1, "0.0000000000000000001");
+        assert_reflexive(360, 1, "360.0000000000000000001");
+        assert_reflexive(360, 100, "360.00000000000000001");
+        assert_reflexive(360, 120, "360.000000000000000012");
+        assert_reflexive(3600, 120, "3600.000000000000000012");
+
+        // edge cases: what if there are more than 19 decimal digits stored
+        // in the low bits?
+        assert_reflexive(360, 9999999999999999999, "360.9999999999999999999");
+        assert_reflexive(360, 10000000000000000000, "361.0");
+        assert_reflexive(360, 10000000000000000001, "361.0000000000000000001");
+        assert_reflexive(360, 10000000000000000042, "361.0000000000000000042");
+        assert_reflexive(
+            360,
+            u64::MAX,
+            &format!("361.{}", u64::MAX - RocDec::DECIMAL_MAX),
         );
-    }
-
-    #[test]
-    fn i128_max_to_str() {
-        assert_eq!(
-            "1701411834604692317.31687303715884105727",
-            RocDec(i128::MAX).to_string()
+        assert_reflexive(i64::MAX, 0, "9223372036854775807.0");
+        assert_reflexive(i64::MIN, 0, "-9223372036854775808.0");
+        assert_reflexive(
+            i64::MAX,
+            u64::MAX,
+            "9223372036854775808.8446744073709551615",
         );
-    }
-
-    #[test]
-    fn i128_almost_max_to_str() {
-        assert_eq!(
-            "1701411834604692317.31687303715884105726",
-            RocDec(i128::MAX - 1).to_string()
+        assert_reflexive(
+            i64::MIN,
+            u64::MAX,
+            "-9223372036854775809.8446744073709551615",
         );
+
+        // TODO quickcheck test this, with negatives!!!
     }
 
-    #[test]
-    fn from_str_0() {
-        assert_reflexive("0.0");
-    }
+    fn assert_added(hi1: i64, lo1: u64, hi2: i64, lo2: u64, expected: &str) {
+        let dec1 = RocDec::new(hi1, lo1);
+        let dec2 = RocDec::new(hi2, lo2);
 
-    #[test]
-    fn from_str_positive_int() {
-        assert_reflexive("1.0");
-        assert_reflexive("10.0");
-        assert_reflexive("360.0");
-    }
-
-    #[test]
-    fn from_str_negative_int() {
-        assert_reflexive("-1.0");
-        assert_reflexive("-10.0");
-        assert_reflexive("-360.0");
-    }
-
-    #[test]
-    fn from_str_0_point() {
-        assert_reflexive("0.0000000000000000001");
-    }
-
-    #[test]
-    fn from_str_before_and_after_dot() {
-        assert_reflexive("360.0000000000000000001");
-        assert_reflexive("360.00000000000000001");
-        assert_reflexive("360.000000000000000012");
-        assert_reflexive("3600.000000000000000012");
-    }
-
-    #[test]
-    fn from_str_min() {
-        assert_reflexive("-1701411834604692317.31687303715884105728"); // RocDec::MIN
-        assert_reflexive("-1701411834604692317.31687303715884105727"); // RocDec::MIN + 1
-    }
-
-    #[test]
-    fn from_str_max() {
-        assert_reflexive("1701411834604692317.31687303715884105727"); // RocDec::MAX
-        assert_reflexive("1701411834604692317.31687303715884105726"); // RocDec::MAX - 1
+        assert_eq!(expected, dec1.add(dec2).to_string());
     }
 
     fn assert_add(dec1: &str, dec2: &str, expected: &str) {
@@ -652,11 +515,25 @@ mod tests {
         assert_eq!(expected, dec1.add(dec2).to_string());
     }
 
+    fn assert_subtracted(hi1: i64, lo1: u64, hi2: i64, lo2: u64, expected: &str) {
+        let dec1 = RocDec::new(hi1, lo1);
+        let dec2 = RocDec::new(hi2, lo2);
+
+        assert_eq!(expected, dec1.sub(dec2).to_string());
+    }
+
     fn assert_sub(dec1: &str, dec2: &str, expected: &str) {
         let dec1: RocDec = dec1.try_into().unwrap();
         let dec2: RocDec = dec2.try_into().unwrap();
 
         assert_eq!(expected, dec1.sub(dec2).to_string());
+    }
+
+    fn assert_multiplied(hi1: i64, lo1: u64, hi2: i64, lo2: u64, expected: &str) {
+        let dec1 = RocDec::new(hi1, lo1);
+        let dec2 = RocDec::new(hi2, lo2);
+
+        assert_eq!(expected, dec1.mul(dec2).to_string());
     }
 
     fn assert_mul(dec1: &str, dec2: &str, expected: &str) {
@@ -669,12 +546,16 @@ mod tests {
     #[test]
     fn add() {
         // integers
+        assert_added(0, 0, 0, 0, "0.0");
         assert_add("0.0", "0.0", "0.0");
+        assert_added(360, 0, 360, 0, "720.0");
         assert_add("360.0", "360.0", "720.0");
+        assert_added(123, 0, 456, 0, "579.0");
         assert_add("123.0", "456.0", "579.0");
 
         // non-integers
         assert_add("0.1", "0.2", "0.3");
+        assert_added(111, 555, 222, 444, "333.0000000000000000999");
         assert_add(
             "111.0000000000000000555",
             "222.0000000000000000444",
@@ -685,47 +566,34 @@ mod tests {
     #[test]
     fn sub() {
         // integers
+        assert_subtracted(0, 0, 0, 0, "0.0");
         assert_sub("0.0", "0.0", "0.0");
+        assert_subtracted(360, 0, 360, 0, "0.0");
         assert_sub("360.0", "360.0", "0.0");
+        assert_subtracted(123, 0, 456, 0, "-333.0");
         assert_sub("123.0", "456.0", "-333.0");
 
         // non-integers
         assert_sub("0.3", "0.2", "0.1");
+        assert_subtracted(111, 555, 222, 444, "-111.0000000000000000111");
         assert_sub(
             "111.0000000000000000555",
             "222.0000000000000000444",
-            "-110.9999999999999999889",
+            "-111.0000000000000000111",
         );
     }
 
     #[test]
-    fn mul_zero() {
+    fn mul() {
+        // integers
+        assert_multiplied(0, 0, 0, 0, "0.0");
         assert_mul("0.0", "0.0", "0.0");
-    }
-
-    #[test]
-    fn mul_small() {
-        assert_mul("0.0003", "0.0002", "0.00000006");
-    }
-
-    #[test]
-    fn mul_positive_ints() {
+        assert_multiplied(2, 0, 3, 0, "6.0");
+        assert_mul("2.0", "3.0", "6.0");
         assert_mul("2.0", "3.0", "6.0");
         assert_mul("15.0", "74.0", "1110.0");
-    }
 
-    #[test]
-    fn mul_negative_ints() {
-        assert_mul("-2.0", "3.0", "-6.0");
-        assert_mul("2.0", "-3.0", "-6.0");
-        assert_mul("-2.0", "-3.0", "6.0");
-        assert_mul("-15.0", "74.0", "-1110.0");
-        assert_mul("15.0", "-74.0", "-1110.0");
-        assert_mul("-15.0", "-74.0", "1110.0");
-    }
-
-    #[test]
-    fn mul_positive_non_ints() {
+        // non-integers
         assert_mul("1.1", "2.2", "2.42");
         assert_mul("2.0", "1.5", "3.0");
         assert_mul("2.3", "3.8", "8.74");
@@ -737,13 +605,15 @@ mod tests {
         assert_mul("1.0000001", "7.0000002", "7.00000090000002");
         assert_mul("1.00000001", "7.00000002", "7.0000000900000002");
         assert_mul("1.000000001", "7.000000002", "7.000000009000000002");
-    }
-
-    #[test]
-    fn mul_negative_non_ints() {
-        assert_mul("-1.1", "-2.2", "2.42");
-        assert_mul("1.1", "-2.2", "-2.42");
         assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
         assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
     }
+}
+
+#[inline(always)]
+fn decimalize(num: u128) -> (u64, u64) {
+    let hi = (num >> 19) / 5u128.pow(19);
+    let lo = num % 10u128.pow(19);
+
+    (hi as u64, lo as u64)
 }
