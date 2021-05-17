@@ -353,6 +353,67 @@ fn mul_and_decimalize(a: u128, b: u128) -> u128 {
 
     // Divide
 
+    // Or just multiply by: ceil(2^321/10^20) then right shift 321 times.
+    // 4271974071841820164790043412339104229205409044713305539894083215644439451561281100045924173873152
+
+    if true {
+        use ethnum::U256;
+        // This needs to do multiplication in away that expands,
+        // since we throw away 321 bits we care only about the higher end, not lower.
+        // So like need to do high low mult with 2 U256's and then bitshift.
+        let lhs_hi = U256::from_words(0, hi);
+        let lhs_lo = U256::from_words(0, lo);
+        let rhs_hi = U256::from_words(0, 0x5E72843249088D75447A5D8E535E7AC2u128);
+        let rhs_lo = U256::from_words(0, 0x0C0F5402CFBB299526D482C7309FEC9Du128);
+        let ea = lhs_lo * rhs_lo;
+        let gf = lhs_hi * rhs_lo;
+        let jh = lhs_lo * rhs_hi;
+        let lk = lhs_hi * rhs_hi;
+
+        let e = *ea.high();
+        let a = *ea.low();
+
+        let g = *gf.high();
+        let f = *gf.low();
+
+        let j = *jh.high();
+        let h = *jh.low();
+
+        let l = *lk.high();
+        let k = *lk.low();
+
+        // b = e + f + h
+        let (e_plus_f, overflowed) = e.overflowing_add(f);
+        let b_carry1 = if overflowed { 1 } else { 0 };
+        let (b, overflowed) = e_plus_f.overflowing_add(h);
+        let b_carry2 = if overflowed { 1 } else { 0 };
+
+        // c = carry + g + j + k // it doesn't say +k but I think it should be?
+        let (g_plus_j, overflowed) = g.overflowing_add(j);
+        let c_carry1 = if overflowed { 1 } else { 0 };
+        let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k); // it doesn't say +k but I think it should be?
+        let c_carry2 = if overflowed { 1 } else { 0 };
+        let (c_without_bcarry2, overflowed) = g_plus_j_plus_k.overflowing_add(b_carry1);
+        let c_carry3 = if overflowed { 1 } else { 0 };
+        let (c, overflowed) = c_without_bcarry2.overflowing_add(b_carry2);
+        let c_carry4 = if overflowed { 1 } else { 0 };
+
+        // d = carry + l
+        let (d, overflowed1) = l.overflowing_add(c_carry1);
+        let (d, overflowed2) = d.overflowing_add(c_carry2);
+        let (d, overflowed3) = d.overflowing_add(c_carry3);
+        let (d, overflowed4) = d.overflowing_add(c_carry4);
+
+        if overflowed1 || overflowed2 || overflowed3 || overflowed4 {
+            todo!("overflowed")
+        }
+
+        // Final 512bit value is d, c, b, a
+        // need to left shift 321 times
+        // 321 - 256 is 65. So left shift d, c 65 times.
+        return c >> 65 | (d << (128 - 65));
+    }
+
     // Since we want to divide by 10^20, we can instead bit shift by 20 and then
     // divide by 5^20 instead. (This is an inlined u256 shift right.)
     lo = (lo >> RocDec::DECIMAL_PLACES) | (hi << (128 - RocDec::DECIMAL_PLACES));
