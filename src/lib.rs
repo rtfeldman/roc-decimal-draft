@@ -141,17 +141,16 @@ impl std::ops::Mul for RocDec {
         // appropriate sign at the very end.
         //
         // We do checked_abs because if we had -i128::MAX before, this will overflow.
-        let (self_hi, self_lo) = match self_i128.checked_abs() {
+        let self_hi;
+        let self_lo;
+
+        // set self_hi and self_lo, or return early, or throw an exception.
+        match dbg!(self_i128.checked_abs()) {
             Some(answer) => {
-                println!("answer:        {:#0128b}", answer);
-                println!("answer >> 64:  {:#0128b}", ((answer as u128 >> 64) as u64));
-                println!("answer as u64: {:#0128b}", answer as u128 as u64);
-                (
-                    // hi (shift away the 64 low bits)
-                    ((answer as u128 >> 64) as u64),
-                    // lo (truncate the 64 high bits)
-                    answer as u128 as u64,
-                )
+                // hi (shift away the 64 low bits)
+                self_hi = answer >> 64 as u64;
+                // lo (truncate the 64 high bits)
+                self_lo = answer as u64;
             }
             None => {
                 // Currently, if you try to do multiplication on i64::MIN, panic
@@ -170,13 +169,17 @@ impl std::ops::Mul for RocDec {
             }
         };
 
-        let (other_hi, other_lo) = match other_i128.checked_abs() {
-            Some(answer) => (
+        let other_hi;
+        let other_lo;
+
+        // set other_hi and other_lo, or return early, or throw an exception.
+        match dbg!(other_i128.checked_abs()) {
+            Some(answer) => {
                 // hi (shift away the 64 low bits)
-                ((answer as u128 >> 64) as u64),
+                other_hi = answer >> 64 as u64;
                 // lo (truncate the 64 high bits)
-                answer as u128 as u64,
-            ),
+                other_lo = answer as u64;
+            }
             None => {
                 // Currently, if you try to do multiplication on i64::MIN, panic
                 // unless you're specifically multiplying by 0 or 1.
@@ -193,6 +196,9 @@ impl std::ops::Mul for RocDec {
                 }
             }
         };
+
+        dbg!((self_hi, self_lo));
+        dbg!((other_hi, other_lo));
 
         // Algorithm based on "Multiplication of larger integers" from:
         //
@@ -635,32 +641,32 @@ mod tests {
     #[test]
     fn mul() {
         // integers
-        assert_mul("0.0", "0.0", "0.0");
-        assert_mul("0.0003", "0.0002", "0.00000006");
+        // assert_mul("0.0", "0.0", "0.0");
+        // assert_mul("0.0003", "0.0002", "0.00000006");
         assert_mul("2.0", "3.0", "6.0");
-        assert_mul("-2.0", "3.0", "-6.0");
-        assert_mul("2.0", "-3.0", "-6.0");
-        assert_mul("-2.0", "-3.0", "6.0");
-        assert_mul("15.0", "74.0", "1110.0");
-        assert_mul("-15.0", "74.0", "-1110.0");
-        assert_mul("15.0", "-74.0", "-1110.0");
-        assert_mul("-15.0", "-74.0", "1110.0");
+        // assert_mul("-2.0", "3.0", "-6.0");
+        // assert_mul("2.0", "-3.0", "-6.0");
+        // assert_mul("-2.0", "-3.0", "6.0");
+        // assert_mul("15.0", "74.0", "1110.0");
+        // assert_mul("-15.0", "74.0", "-1110.0");
+        // assert_mul("15.0", "-74.0", "-1110.0");
+        // assert_mul("-15.0", "-74.0", "1110.0");
 
-        // non-integers
-        assert_mul("1.1", "2.2", "2.42");
-        assert_mul("-1.1", "-2.2", "2.42");
-        assert_mul("1.1", "-2.2", "-2.42");
-        assert_mul("2.0", "1.5", "3.0");
-        assert_mul("2.3", "3.8", "8.74");
-        assert_mul("1.01", "7.02", "7.0902");
-        assert_mul("1.001", "7.002", "7.009002");
-        assert_mul("1.0001", "7.0002", "7.00090002");
-        assert_mul("1.00001", "7.00002", "7.0000900002");
-        assert_mul("1.000001", "7.000002", "7.000009000002");
-        assert_mul("1.0000001", "7.0000002", "7.00000090000002");
-        assert_mul("1.00000001", "7.00000002", "7.0000000900000002");
-        assert_mul("1.000000001", "7.000000002", "7.000000009000000002");
-        assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
-        assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
+        // // non-integers
+        // assert_mul("1.1", "2.2", "2.42");
+        // assert_mul("-1.1", "-2.2", "2.42");
+        // assert_mul("1.1", "-2.2", "-2.42");
+        // assert_mul("2.0", "1.5", "3.0");
+        // assert_mul("2.3", "3.8", "8.74");
+        // assert_mul("1.01", "7.02", "7.0902");
+        // assert_mul("1.001", "7.002", "7.009002");
+        // assert_mul("1.0001", "7.0002", "7.00090002");
+        // assert_mul("1.00001", "7.00002", "7.0000900002");
+        // assert_mul("1.000001", "7.000002", "7.000009000002");
+        // assert_mul("1.0000001", "7.0000002", "7.00000090000002");
+        // assert_mul("1.00000001", "7.00000002", "7.0000000900000002");
+        // assert_mul("1.000000001", "7.000000002", "7.000000009000000002");
+        // assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
+        // assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
     }
 }
