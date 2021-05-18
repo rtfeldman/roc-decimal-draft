@@ -264,19 +264,15 @@ impl std::ops::Div for RocDec {
         };
 
         let unsigned_answer = {
-            use ethnum::U256;
+            let numer_u256 = mul_u128(self_u128, 10u128.pow(Self::DECIMAL_PLACES));
+            let answer = div_u256_by_u128(numer_u256, other_u128);
+            let lo = answer.lo;
 
-            let numer_u256 = U256::from_words(0, self_u128)
-                * U256::from_words(0, 10u128.pow(Self::DECIMAL_PLACES));
-
-            let denom_u256 = U256::from_words(0, other_u128);
-
-            let answer = numer_u256 / denom_u256;
-
-            assert!(*answer.high() == 0);
-            assert!(*answer.low() <= i128::MAX as u128);
-
-            *answer.low() as i128
+            if answer.hi == 0 && lo <= i128::MAX as u128 {
+                lo as i128
+            } else {
+                todo!("TODO overflow!");
+            }
         };
 
         // This compiles to a cmov!
@@ -416,6 +412,17 @@ impl RocDec {
                 MIN_STR.to_string()
             }
         }
+    }
+}
+
+/// Multiply two 128-bit ints and divide the result by 10^DECIMAL_PLACES
+#[inline(always)]
+fn div_u256_by_u128(numer: U256, denom: u128) -> U256 {
+    let answer = ethnum::U256::from_words(numer.hi, numer.lo) / ethnum::U256::from_words(0, denom);
+
+    U256 {
+        hi: *answer.high(),
+        lo: *answer.low(),
     }
 }
 
