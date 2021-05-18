@@ -10,9 +10,12 @@ struct U256 {
     lo: u128,
 }
 
-// The result of calling to_string() on RocDec(i128::MIN).
-// This is both a special case and also the longest to_string().
-static I128_MIN_STR: &str = "-1701411834604692317.31687303715884105728";
+// The result of calling to_string() on RocDec::MIN.
+// This is the longest to_string().
+static MIN_STR: &str = "-1701411834604692317.31687303715884105728";
+
+// The result of calling to_string() on RocDec::MAX.
+static MAX_STR: &str = "1701411834604692317.31687303715884105727";
 
 impl Into<String> for RocDec {
     fn into(self) -> String {
@@ -185,7 +188,96 @@ impl std::ops::Mul for RocDec {
         };
 
         let unsigned_answer = mul_and_decimalize(self_u128, other_u128) as i128;
-        // TODO make sure this actually fits in i128!
+
+        // This compiles to a cmov!
+        if is_answer_negative {
+            RocDec(-unsigned_answer)
+        } else {
+            RocDec(unsigned_answer)
+        }
+    }
+}
+
+impl std::ops::Div for RocDec {
+    type Output = Self;
+
+    fn div(self, other: Self) -> Self {
+        let self_i128 = self.0;
+        let other_i128 = other.0;
+
+        // Zero divided by anything is zero.
+        if self_i128 == 0 {
+            return RocDec(0);
+        }
+
+        // Anything divided by zero is an error.
+        if self_i128 == 0 {
+            todo!("division by zero");
+        }
+
+        // If they're both negative, or if neither is negative, the final answer
+        // is positive or zero. If one is negative and the other isn't, the
+        // final answer is negative (or zero, in which case final sign won't matter).
+        //
+        // It's important that we do this in terms of negatives, because doing
+        // it in terms of positives can cause bugs when one is zero.
+        let is_answer_negative = self_i128.is_negative() != other_i128.is_negative();
+
+        // Break the two i128s into two { hi: u64, lo: u64 } tuples, discarding
+        // the sign for now.
+        //
+        // We'll multiply all 4 combinations of these (hi1 x lo1, hi2 x lo2,
+        // hi1 x lo2, hi2 x lo1) and add them as appropriate, then apply the
+        // appropriate sign at the very end.
+        //
+        // We do checked_abs because if we had -i128::MAX before, this will overflow.
+        let self_u128 = match self_i128.checked_abs() {
+            Some(answer) => answer as u128,
+            None => {
+                // Currently, if you try to do multiplication on i64::MIN, panic
+                // unless you're specifically multiplying by 0 or 1.
+                //
+                // Maybe we could support more cases in the future
+                if other_i128 == Self::ONE_POINT_ZERO {
+                    // Anything divided by 1 is itself
+                    return self;
+                } else {
+                    todo!("TODO overflow!");
+                }
+            }
+        };
+
+        let other_u128 = match other_i128.checked_abs() {
+            Some(answer) => answer as u128,
+            None => {
+                // Currently, if you try to do multiplication on i64::MIN, panic
+                // unless you're specifically multiplying by 0 or 1.
+                //
+                // Maybe we could support more cases in the future
+                if self_i128 == Self::ONE_POINT_ZERO {
+                    // Anything times 1 is itself
+                    return other;
+                } else {
+                    todo!("TODO overflow!");
+                }
+            }
+        };
+
+        let unsigned_answer = {
+            use ethnum::U256;
+
+            let numer_u256 = U256::from_words(0, self_u128)
+                * U256::from_words(0, 10u128.pow(Self::DECIMAL_PLACES));
+
+            let denom_u256 = U256::from_words(0, other_u128);
+
+            let answer = numer_u256 / denom_u256;
+
+            assert!(*answer.high() == 0);
+            assert!(*answer.low() <= i128::MAX as u128);
+
+            *answer.low() as i128
+        };
 
         // This compiles to a cmov!
         if is_answer_negative {
@@ -220,12 +312,12 @@ impl RocDec {
 
                 let mut self_u128 = answer as u128;
 
-                // I128_MIN_STR has the longest possible length of one of these.
+                // MIN_STR has the longest possible length of one of these.
                 // This ensures we will not need to reallocate.
                 //
                 // TODO do this with a RocStr, and don't allocate on the heap
                 // until we've run out of stack bytes for a small str.
-                let mut string = String::with_capacity(I128_MIN_STR.len());
+                let mut string = String::with_capacity(MIN_STR.len());
                 let mut display_zeroes = false;
                 let mut decimal_places_used = 0;
 
@@ -321,7 +413,7 @@ impl RocDec {
             None => {
                 // if it was exactly i128::MIN, then taking its absolute value
                 // is impossible to represent...but we also know the exact str:
-                I128_MIN_STR.to_string()
+                MIN_STR.to_string()
             }
         }
     }
@@ -425,7 +517,7 @@ fn mul_u128(a: u128, b: u128) -> U256 {
 mod tests {
     use crate::RocDec;
     use std::convert::TryInto;
-    use std::ops::{Add, Mul, Neg, Sub};
+    use std::ops::{Add, Div, Mul, Neg, Sub};
 
     fn assert_reflexive(string: &str) {
         let dec: RocDec = string.try_into().unwrap();
@@ -600,6 +692,13 @@ mod tests {
         assert_eq!(expected, dec1.mul(dec2).to_string());
     }
 
+    fn assert_div(dec1: &str, dec2: &str, expected: &str) {
+        let dec1: RocDec = dec1.try_into().unwrap();
+        let dec2: RocDec = dec2.try_into().unwrap();
+
+        assert_eq!(expected, dec1.div(dec2).to_string());
+    }
+
     #[test]
     fn add() {
         // integers
@@ -617,6 +716,18 @@ mod tests {
     }
 
     #[test]
+    fn add_extremes() {
+        let negative_max = &format!("-{}", super::MAX_STR);
+
+        assert_add("0.0", super::MAX_STR, super::MAX_STR);
+        assert_add("0.0", super::MIN_STR, super::MIN_STR);
+        assert_add(super::MAX_STR, "0.0", super::MAX_STR);
+        assert_add(super::MIN_STR, "0.0", super::MIN_STR);
+        assert_add(super::MAX_STR, negative_max, "0.0");
+        assert_add(negative_max, super::MAX_STR, "0.0");
+    }
+
+    #[test]
     fn sub() {
         // integers
         assert_sub("0.0", "0.0", "0.0");
@@ -630,6 +741,16 @@ mod tests {
             "222.0000000000000000444",
             "-110.9999999999999999889",
         );
+    }
+
+    #[test]
+    fn sub_extremes() {
+        let negative_max = &format!("-{}", super::MAX_STR);
+
+        assert_sub("0.0", super::MAX_STR, negative_max);
+        assert_sub("0.0", negative_max, super::MAX_STR);
+        assert_sub(super::MAX_STR, super::MAX_STR, "0.0");
+        assert_sub(super::MIN_STR, super::MIN_STR, "0.0");
     }
 
     #[test]
@@ -679,5 +800,88 @@ mod tests {
         assert_mul("1.1", "-2.2", "-2.42");
         assert_mul("-1.000000001", "7.000000002", "-7.000000009000000002");
         assert_mul("1.000000001", "-7.000000002", "-7.000000009000000002");
+    }
+
+    #[test]
+    fn mul_extremes() {
+        assert_mul("0.0", super::MIN_STR, "0.0");
+        assert_mul("0.0", super::MAX_STR, "0.0");
+        assert_mul(super::MIN_STR, "0.0", "0.0");
+        assert_mul(super::MAX_STR, "0.0", "0.0");
+        assert_mul(super::MIN_STR, "1.0", super::MIN_STR);
+        assert_mul(super::MAX_STR, "1.0", super::MAX_STR);
+        assert_mul("1.0", super::MIN_STR, super::MIN_STR);
+        assert_mul("1.0", super::MAX_STR, super::MAX_STR);
+    }
+
+    #[test]
+    fn div_zero() {
+        assert_div("0.0", "1.0", "0.0");
+        assert_div("0.0", super::MIN_STR, "0.0");
+        assert_div("0.0", super::MAX_STR, "0.0");
+    }
+
+    #[test]
+    fn div_positive_ints() {
+        assert_div("3.0", "2.0", "1.5");
+        assert_div("4.0", "2.0", "2.0");
+        assert_div("1.0", "8.0", "0.125");
+        assert_div("1.0", "3.0", "0.33333333333333333333");
+        assert_div("15.0", "74.0", "0.2027027027027027027");
+    }
+
+    #[test]
+    fn div_negative_ints() {
+        assert_div("3.0", "-2.0", "-1.5");
+        assert_div("-3.0", "2.0", "-1.5");
+        assert_div("-3.0", "-2.0", "1.5");
+        assert_div("4.0", "-2.0", "-2.0");
+        assert_div("-4.0", "2.0", "-2.0");
+        assert_div("-4.0", "-2.0", "2.0");
+        assert_div("1.0", "-8.0", "-0.125");
+        assert_div("-1.0", "8.0", "-0.125");
+        assert_div("-1.0", "-8.0", "0.125");
+        assert_div("1.0", "-3.0", "-0.33333333333333333333");
+        assert_div("-1.0", "3.0", "-0.33333333333333333333");
+        assert_div("-1.0", "-3.0", "0.33333333333333333333");
+        assert_div("15.0", "-74.0", "-0.2027027027027027027");
+        assert_div("-15.0", "74.0", "-0.2027027027027027027");
+        assert_div("-15.0", "-74.0", "0.2027027027027027027");
+    }
+
+    #[test]
+    fn div_positive_non_ints() {
+        assert_div("0.9", "0.08", "11.25");
+        assert_div("1.1", "2.2", "0.5");
+        assert_div("2.0", "1.5", "1.33333333333333333333");
+        assert_div("2.3", "3.8", "0.6052631578947368421");
+        assert_div("1.01", "7.02", "0.14387464387464387464");
+    }
+
+    #[test]
+    fn div_negative_non_ints() {
+        assert_div("0.9", "-0.08", "-11.25");
+        assert_div("-0.9", "0.08", "-11.25");
+        assert_div("-0.9", "-0.08", "11.25");
+        assert_div("1.1", "-2.2", "-0.5");
+        assert_div("-1.1", "2.2", "-0.5");
+        assert_div("-1.1", "-2.2", "0.5");
+        assert_div("2.0", "-1.5", "-1.33333333333333333333");
+        assert_div("-2.0", "1.5", "-1.33333333333333333333");
+        assert_div("-2.0", "-1.5", "1.33333333333333333333");
+        assert_div("2.3", "-3.8", "-0.6052631578947368421");
+        assert_div("-2.3", "3.8", "-0.6052631578947368421");
+        assert_div("-2.3", "-3.8", "0.6052631578947368421");
+        assert_div("1.01", "-7.02", "-0.14387464387464387464");
+        assert_div("-1.01", "7.02", "-0.14387464387464387464");
+        assert_div("-1.01", "-7.02", "0.14387464387464387464");
+    }
+
+    #[test]
+    fn div_extremes() {
+        assert_div("0.0", super::MIN_STR, "0.0");
+        assert_div("0.0", super::MAX_STR, "0.0");
+        assert_div(super::MIN_STR, "1.0", super::MIN_STR);
+        assert_div(super::MAX_STR, "1.0", super::MAX_STR);
     }
 }

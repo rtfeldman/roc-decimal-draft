@@ -8,3 +8,4 @@ edition = "2018"
 
 [dependencies]
 decimal = "2"
+ethnum = "1"
