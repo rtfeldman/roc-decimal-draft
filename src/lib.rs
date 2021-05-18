@@ -5,6 +5,11 @@ pub fn fuzz_new(num: i128) -> RocDec {
     RocDec(num)
 }
 
+struct U256 {
+    hi: u128,
+    lo: u128,
+}
+
 // The result of calling to_string() on RocDec(i128::MIN).
 // This is both a special case and also the longest to_string().
 static I128_MIN_STR: &str = "-1701411834604692317.31687303715884105728";
@@ -323,17 +328,79 @@ impl RocDec {
 }
 
 /// Multiply two 128-bit ints and divide the result by 10^DECIMAL_PLACES
-///
+#[inline(always)]
+fn mul_and_decimalize(a: u128, b: u128) -> u128 {
+    // Multiply
+    let U256 {
+        hi: lhs_hi,
+        lo: lhs_lo,
+    } = mul_u128(a, b);
+
+    // Divide - or just multiply by: ceil(2^321/10^20) then right shift 321 times.
+    // 42719740718418201647900434123391042292054090447133055398940832156444394515613
+
+    // This needs to do multiplication in a way that expands,
+    // since we throw away 321 bits we care only about the higher end, not lower.
+    // So like need to do high low mult with 2 U256's and then bitshift.
+    // I bet this has a lot of room for multiplication optimization.
+    let rhs_hi = 0x5E72843249088D75447A5D8E535E7AC2u128;
+    let rhs_lo = 0x0C0F5402CFBB299526D482C7309FEC9Du128;
+    let ea = mul_u128(lhs_lo, rhs_lo);
+    let gf = mul_u128(lhs_hi, rhs_lo);
+    let jh = mul_u128(lhs_lo, rhs_hi);
+    let lk = mul_u128(lhs_hi, rhs_hi);
+
+    let e = ea.hi;
+    let _a = ea.lo;
+
+    let g = gf.hi;
+    let f = gf.lo;
+
+    let j = jh.hi;
+    let h = jh.lo;
+
+    let l = lk.hi;
+    let k = lk.lo;
+
+    // b = e + f + h
+    let (e_plus_f, overflowed) = e.overflowing_add(f);
+    let b_carry1 = if overflowed { 1 } else { 0 };
+    let (_b, overflowed) = e_plus_f.overflowing_add(h);
+    let b_carry2 = if overflowed { 1 } else { 0 };
+
+    // c = carry + g + j + k // it doesn't say +k but I think it should be?
+    let (g_plus_j, overflowed) = g.overflowing_add(j);
+    let c_carry1 = if overflowed { 1 } else { 0 };
+    let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k); // it doesn't say +k but I think it should be?
+    let c_carry2 = if overflowed { 1 } else { 0 };
+    let (c_without_bcarry2, overflowed) = g_plus_j_plus_k.overflowing_add(b_carry1);
+    let c_carry3 = if overflowed { 1 } else { 0 };
+    let (c, overflowed) = c_without_bcarry2.overflowing_add(b_carry2);
+    let c_carry4 = if overflowed { 1 } else { 0 };
+
+    // d = carry + l
+    let (d, overflowed1) = l.overflowing_add(c_carry1);
+    let (d, overflowed2) = d.overflowing_add(c_carry2);
+    let (d, overflowed3) = d.overflowing_add(c_carry3);
+    let (d, overflowed4) = d.overflowing_add(c_carry4);
+
+    if overflowed1 || overflowed2 || overflowed3 || overflowed4 {
+        todo!("overflowed")
+    }
+
+    // Final 512bit value is d, c, b, a
+    // need to left shift 321 times
+    // 321 - 256 is 65. So left shift d, c 65 times.
+    c >> 65 | (d << (128 - 65))
+}
+
 /// Adapted from https://github.com/nlordell/ethnum-rs
 /// Copyright (c) 2020 Nicholas Rodrigues Lordello
 /// Licensed under the Apache License version 2.0
 #[inline(always)]
-fn mul_and_decimalize(a: u128, b: u128) -> u128 {
-    // Multiply
-
-    // The high and low bits of our u256 product
-    let mut hi: u128;
-    let mut lo: u128;
+fn mul_u128(a: u128, b: u128) -> U256 {
+    let mut hi;
+    let mut lo;
 
     const BITS_IN_DWORD_2: u32 = 64;
     const LOWER_MASK: u128 = u128::MAX >> BITS_IN_DWORD_2;
@@ -351,202 +418,7 @@ fn mul_and_decimalize(a: u128, b: u128) -> u128 {
     hi += t >> BITS_IN_DWORD_2;
     hi += (a >> BITS_IN_DWORD_2) * (b >> BITS_IN_DWORD_2);
 
-    // Divide
-
-    // Or just multiply by: ceil(2^321/10^20) then right shift 321 times.
-    // 42719740718418201647900434123391042292054090447133055398940832156444394515613
-
-    if true {
-        use ethnum::U256;
-        // This needs to do multiplication in a way that expands,
-        // since we throw away 321 bits we care only about the higher end, not lower.
-        // So like need to do high low mult with 2 U256's and then bitshift.
-        // I bet this has a lot of room for multiplication optimization.
-        let lhs_hi = U256::from_words(0, hi);
-        let lhs_lo = U256::from_words(0, lo);
-        let rhs_hi = U256::from_words(0, 0x5E72843249088D75447A5D8E535E7AC2u128);
-        let rhs_lo = U256::from_words(0, 0x0C0F5402CFBB299526D482C7309FEC9Du128);
-        let ea = lhs_lo * rhs_lo;
-        let gf = lhs_hi * rhs_lo;
-        let jh = lhs_lo * rhs_hi;
-        let lk = lhs_hi * rhs_hi;
-
-        let e = *ea.high();
-        let a = *ea.low();
-
-        let g = *gf.high();
-        let f = *gf.low();
-
-        let j = *jh.high();
-        let h = *jh.low();
-
-        let l = *lk.high();
-        let k = *lk.low();
-
-        // b = e + f + h
-        let (e_plus_f, overflowed) = e.overflowing_add(f);
-        let b_carry1 = if overflowed { 1 } else { 0 };
-        let (b, overflowed) = e_plus_f.overflowing_add(h);
-        let b_carry2 = if overflowed { 1 } else { 0 };
-
-        // c = carry + g + j + k // it doesn't say +k but I think it should be?
-        let (g_plus_j, overflowed) = g.overflowing_add(j);
-        let c_carry1 = if overflowed { 1 } else { 0 };
-        let (g_plus_j_plus_k, overflowed) = g_plus_j.overflowing_add(k); // it doesn't say +k but I think it should be?
-        let c_carry2 = if overflowed { 1 } else { 0 };
-        let (c_without_bcarry2, overflowed) = g_plus_j_plus_k.overflowing_add(b_carry1);
-        let c_carry3 = if overflowed { 1 } else { 0 };
-        let (c, overflowed) = c_without_bcarry2.overflowing_add(b_carry2);
-        let c_carry4 = if overflowed { 1 } else { 0 };
-
-        // d = carry + l
-        let (d, overflowed1) = l.overflowing_add(c_carry1);
-        let (d, overflowed2) = d.overflowing_add(c_carry2);
-        let (d, overflowed3) = d.overflowing_add(c_carry3);
-        let (d, overflowed4) = d.overflowing_add(c_carry4);
-
-        if overflowed1 || overflowed2 || overflowed3 || overflowed4 {
-            todo!("overflowed")
-        }
-
-        // Final 512bit value is d, c, b, a
-        // need to left shift 321 times
-        // 321 - 256 is 65. So left shift d, c 65 times.
-        return c >> 65 | (d << (128 - 65));
-    }
-
-    // Since we want to divide by 10^20, we can instead bit shift by 20 and then
-    // divide by 5^20 instead. (This is an inlined u256 shift right.)
-    lo = (lo >> RocDec::DECIMAL_PLACES) | (hi << (128 - RocDec::DECIMAL_PLACES));
-    hi = hi >> RocDec::DECIMAL_PLACES;
-
-    const DENOM: u128 = 5u128.pow(RocDec::DECIMAL_PLACES);
-
-    #[derive(Copy, Clone)]
-    struct U256 {
-        hi: u128,
-        lo: u128,
-    }
-
-    #[inline]
-    fn wrapping_sub(r: U256, a: U256) -> U256 {
-        let (lo, carry) = r.lo.overflowing_sub(a.lo);
-
-        U256 {
-            lo,
-            hi: r.hi.wrapping_sub(carry as _).wrapping_sub(a.hi),
-        }
-    }
-
-    const N_UDWORD_BITS: u32 = 128;
-    const N_UTWORD_BITS: u32 = 256;
-
-    if false {
-        use ethnum::U256;
-
-        return *(U256::from_words(hi, lo) / U256::from_words(0, DENOM)).low();
-    }
-
-    let mut q;
-    let mut r;
-    let mut sr: u32;
-
-    // special cases, X is unknown, K != 0
-    if hi == 0 {
-        // we know d.hi == 0, so:
-
-        // 0 X
-        // ---
-        // 0 X
-        return lo / DENOM;
-    }
-
-    // K X
-    // ---
-    // 0 K
-    sr = 1 + N_UDWORD_BITS + DENOM.leading_zeros() - (hi).leading_zeros();
-    // 2 <= sr <= N_UTWORD_BITS - 1
-    // q.all = n.all << (N_UTWORD_BITS - sr);
-    // r.all = n.all >> sr;
-    #[allow(clippy::comparison_chain)]
-    if sr == N_UDWORD_BITS {
-        q = U256 { hi: lo, lo: 0 };
-        r = U256 { hi: 0, lo: hi };
-    } else if sr < N_UDWORD_BITS {
-        /* 2 <= sr <= N_UDWORD_BITS - 1 */
-        q = U256 {
-            hi: lo << (N_UDWORD_BITS - sr),
-            lo: 0,
-        };
-        r = U256 {
-            hi: hi >> sr,
-            lo: (hi << (N_UDWORD_BITS - sr)) | (lo >> sr),
-        };
-    } else {
-        /* N_UDWORD_BITS + 1 <= sr <= N_UTWORD_BITS - 1 */
-        q = U256 {
-            hi: (hi << (N_UTWORD_BITS - sr)) | (lo >> (sr - N_UDWORD_BITS)),
-            lo: lo << (N_UTWORD_BITS - sr),
-        };
-        r = U256 {
-            hi: 0,
-            lo: hi >> (sr - N_UDWORD_BITS),
-        };
-    }
-
-    // Not a special case
-    // q and r are initialized with:
-    // q.all = n.all << (N_UTWORD_BITS - sr);
-    // r.all = n.all >> sr;
-    // 1 <= sr <= N_UTWORD_BITS - 1
-    let mut carry = 0u128;
-    while sr > 0 {
-        // r:q = ((r:q)  << 1) | carry
-        r.hi = (r.hi << 1) | (r.lo >> (N_UDWORD_BITS - 1));
-        r.lo = (r.lo << 1) | (q.hi >> (N_UDWORD_BITS - 1));
-        q.hi = (q.hi << 1) | (q.lo >> (N_UDWORD_BITS - 1));
-        q.lo = (q.lo << 1) | carry;
-        // carry = 0;
-        // if (r.all >= d.all)
-        // {
-        //     r.all -= d.all;
-        //      carry = 1;
-        // }
-        // NOTE: Modified from `(d - r - 1) >> (N_UTWORD_BITS - 1)` to be an
-        // **arithmetic** shift.
-        let s = {
-            let hi = wrapping_sub(
-                wrapping_sub(U256 { hi: 0, lo: DENOM }, r),
-                U256 { hi: 0, lo: 1 },
-            )
-            .hi;
-
-            U256 {
-                hi: 0,
-                lo: ((hi as i128) >> 127) as u128,
-            }
-        };
-
-        carry = s.lo & 1;
-        r = wrapping_sub(
-            r,
-            U256 {
-                hi: 0,
-                lo: DENOM & s.lo,
-            },
-        );
-
-        sr -= 1;
-    }
-
-    let final_hi = (q.hi << 1) | (q.lo >> (128 - 1));
-
-    if final_hi == 0 {
-        (q.lo << 1) | carry
-    } else {
-        // high bits of the u256 weren't empty!
-        todo!("Overflow!");
-    }
+    U256 { hi, lo }
 }
 
 #[cfg(test)]
