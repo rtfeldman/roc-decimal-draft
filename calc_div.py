@@ -1,10 +1,9 @@
 # This file is used to convert an integer division by a contstant into a multiplication.
-# For details on the algorithm, look here: https://gmplib.org/~tege/divcnst-pldi94.pdf
-# Note, the version implemented here is for unsigned division, though there are other algs for signed.
-# Also, if this alg fails, there is another that should work here: http://ridiculousfish.com/files/faster_unsigned_division_by_constants.pdf
+# For details on the algorithm, look here: http://ridiculousfish.com/files/faster_unsigned_division_by_constants.pdf
+# The conclusion section definse what is implemented here in simplest terms.
 
 from argparse import ArgumentParser
-from math import ceil
+from math import log2, floor
 
 if __name__ == '__main__':
     parser = ArgumentParser(
@@ -19,22 +18,19 @@ if __name__ == '__main__':
     bits = args.bits
     divisor = args.divisor
 
-    for l in range(bits):
-        pow_2 = 1 << (bits + l)
+    for p in range(floor(log2(divisor))+1):
+        pow_2 = 1 << (bits + p)
 
-        # We use int division because we need precision.
-        m = pow_2//divisor
-
-        # We were supposed to round up, not trunc(round down).
-        # So correct that now.
-        if pow_2 % divisor > 0:
-            m += 1
-
-        if pow_2 <= m*divisor <= pow_2+(1 << l):
+        if pow_2 % divisor <= 1 << p:
             print('Found a solution')
+            m = pow_2//divisor
+            print('add 1 to your number')
             print(f'multiply by {m}')
             print(f'in hex: {hex(m)}')
-            print(f'then right shift {bits+l} times')
+            print(f'then right shift {bits+p} times')
+            print()
+            print('Note: for the addition, if it could overflow, use saturating addition')
+            print('If it came from a signed type initially, this is not possible')
             exit()
 
     print('Found no solution, maybe try a different algorithm')
