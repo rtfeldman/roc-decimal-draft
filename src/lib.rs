@@ -13,10 +13,10 @@ struct U256 {
 
 // The result of calling to_string() on RocDec::MIN.
 // This is the longest to_string().
-static MIN_STR: &str = "-1701411834604692317.31687303715884105728";
+static MIN_STR: &str = "-170141183460469231731.687303715884105728";
 
 // The result of calling to_string() on RocDec::MAX.
-static MAX_STR: &str = "1701411834604692317.31687303715884105727";
+static MAX_STR: &str = "170141183460469231731.687303715884105727";
 
 impl Into<String> for RocDec {
     fn into(self) -> String {
@@ -293,7 +293,7 @@ impl RocDec {
     pub const MIN: Self = Self(i128::MIN);
     pub const MAX: Self = Self(i128::MAX);
 
-    pub const DECIMAL_PLACES: u32 = 20;
+    pub const DECIMAL_PLACES: u32 = 18;
 
     const ONE_POINT_ZERO: i128 = 10i128.pow(Self::DECIMAL_PLACES);
 
@@ -574,15 +574,20 @@ fn mul_and_decimalize(a: u128, b: u128) -> u128 {
         lo: lhs_lo,
     } = mul_u128(a, b);
 
-    // Divide - or just multiply by: ceil(2^321/10^20) then right shift 321 times.
-    // 42719740718418201647900434123391042292054090447133055398940832156444394515613
+    // Divide - or just add 1, multiply by floor(2^315/10^18), then right shift 315 times.
+    // floor(2^315/10^18) is 66749594872528440074844428317798503581334516323645399060845050244444366430645
+
+    // Add 1.
+    // This can't overflow because the intial numbers are only 127bit due to removing the sign bit.
+    let (lhs_lo, carry) = lhs_lo.overflowing_add(1);
+    let lhs_hi = lhs_hi + if carry { 1 } else { 0 };
 
     // This needs to do multiplication in a way that expands,
-    // since we throw away 321 bits we care only about the higher end, not lower.
+    // since we throw away 315 bits we care only about the higher end, not lower.
     // So like need to do high low mult with 2 U256's and then bitshift.
     // I bet this has a lot of room for multiplication optimization.
-    let rhs_hi = 0x5E72843249088D75447A5D8E535E7AC2u128;
-    let rhs_lo = 0x0C0F5402CFBB299526D482C7309FEC9Du128;
+    let rhs_hi = 0x9392ee8e921d5d073aff322e62439fcfu128;
+    let rhs_lo = 0x32d7f344649470f90cac0c573bf9e1b5u128;
     let ea = mul_u128(lhs_lo, rhs_lo);
     let gf = mul_u128(lhs_hi, rhs_lo);
     let jh = mul_u128(lhs_lo, rhs_hi);
@@ -628,8 +633,8 @@ fn mul_and_decimalize(a: u128, b: u128) -> u128 {
 
     // Final 512bit value is d, c, b, a
     // need to left shift 321 times
-    // 321 - 256 is 65. So left shift d, c 65 times.
-    c >> 65 | (d << (128 - 65))
+    // 315 - 256 is 59. So left shift d, c 59 times.
+    c >> 59 | (d << (128 - 59))
 }
 
 /// Adapted from https://github.com/nlordell/ethnum-rs
@@ -716,33 +721,33 @@ mod tests {
 
     #[test]
     fn one_to_str() {
-        assert_eq!("1.0", RocDec(100000000000000000000).to_string());
+        assert_eq!("1.0", RocDec(1000000000000000000).to_string());
     }
 
     #[test]
     fn ten_to_str() {
-        assert_eq!("10.0", RocDec(1000000000000000000000).to_string());
+        assert_eq!("10.0", RocDec(10000000000000000000).to_string());
     }
 
     #[test]
     fn point_1_to_str() {
-        assert_eq!("0.1", RocDec(10000000000000000000).to_string());
+        assert_eq!("0.1", RocDec(100000000000000000).to_string());
     }
 
     #[test]
     fn point_01_to_str() {
-        assert_eq!("0.01", RocDec(1000000000000000000).to_string());
+        assert_eq!("0.01", RocDec(10000000000000000).to_string());
     }
 
     #[test]
     fn smallest_positive_to_str() {
-        assert_eq!("0.00000000000000000001", RocDec(1).to_string());
+        assert_eq!("0.000000000000000001", RocDec(1).to_string());
     }
 
     #[test]
     fn i128_min_to_str() {
         assert_eq!(
-            "-1701411834604692317.31687303715884105728",
+            "-170141183460469231731.687303715884105728",
             RocDec(i128::MIN).to_string()
         );
     }
@@ -752,7 +757,7 @@ mod tests {
         // i128::MIN is special-cased because transforming it into a u128
         // would overflow, so make sure that i128::MAX + 1 works as expected!
         assert_eq!(
-            "-1701411834604692317.31687303715884105727",
+            "-170141183460469231731.687303715884105727",
             RocDec(i128::MIN + 1).to_string()
         );
     }
@@ -760,7 +765,7 @@ mod tests {
     #[test]
     fn i128_max_to_str() {
         assert_eq!(
-            "1701411834604692317.31687303715884105727",
+            "170141183460469231731.687303715884105727",
             RocDec(i128::MAX).to_string()
         );
     }
@@ -768,7 +773,7 @@ mod tests {
     #[test]
     fn i128_almost_max_to_str() {
         assert_eq!(
-            "1701411834604692317.31687303715884105726",
+            "170141183460469231731.687303715884105726",
             RocDec(i128::MAX - 1).to_string()
         );
     }
@@ -794,12 +799,12 @@ mod tests {
 
     #[test]
     fn from_str_0_point() {
-        assert_reflexive("0.0000000000000000001");
+        assert_reflexive("0.000000000000000001");
     }
 
     #[test]
     fn from_str_before_and_after_dot() {
-        assert_reflexive("360.0000000000000000001");
+        assert_reflexive("360.000000000000000001");
         assert_reflexive("360.00000000000000001");
         assert_reflexive("360.000000000000000012");
         assert_reflexive("3600.000000000000000012");
@@ -807,14 +812,14 @@ mod tests {
 
     #[test]
     fn from_str_min() {
-        assert_reflexive("-1701411834604692317.31687303715884105728"); // RocDec::MIN
-        assert_reflexive("-1701411834604692317.31687303715884105727"); // RocDec::MIN + 1
+        assert_reflexive("-170141183460469231731.687303715884105728"); // RocDec::MIN
+        assert_reflexive("-170141183460469231731.687303715884105727"); // RocDec::MIN + 1
     }
 
     #[test]
     fn from_str_max() {
-        assert_reflexive("1701411834604692317.31687303715884105727"); // RocDec::MAX
-        assert_reflexive("1701411834604692317.31687303715884105726"); // RocDec::MAX - 1
+        assert_reflexive("170141183460469231731.687303715884105727"); // RocDec::MAX
+        assert_reflexive("170141183460469231731.687303715884105726"); // RocDec::MAX - 1
     }
 
     fn assert_add(dec1: &str, dec2: &str, expected: &str) {
@@ -855,9 +860,9 @@ mod tests {
         // non-integers
         assert_add("0.1", "0.2", "0.3");
         assert_add(
-            "111.0000000000000000555",
-            "222.0000000000000000444",
-            "333.0000000000000000999",
+            "111.000000000000000555",
+            "222.000000000000000444",
+            "333.000000000000000999",
         );
     }
 
@@ -883,9 +888,9 @@ mod tests {
         // non-integers
         assert_sub("0.3", "0.2", "0.1");
         assert_sub(
-            "111.0000000000000000555",
-            "222.0000000000000000444",
-            "-110.9999999999999999889",
+            "111.000000000000000555",
+            "222.000000000000000444",
+            "-110.999999999999999889",
         );
     }
 
@@ -972,8 +977,8 @@ mod tests {
         assert_div("3.0", "2.0", "1.5");
         assert_div("4.0", "2.0", "2.0");
         assert_div("1.0", "8.0", "0.125");
-        assert_div("1.0", "3.0", "0.33333333333333333333");
-        assert_div("15.0", "74.0", "0.2027027027027027027");
+        assert_div("1.0", "3.0", "0.333333333333333333");
+        assert_div("15.0", "74.0", "0.202702702702702702");
     }
 
     #[test]
@@ -987,21 +992,21 @@ mod tests {
         assert_div("1.0", "-8.0", "-0.125");
         assert_div("-1.0", "8.0", "-0.125");
         assert_div("-1.0", "-8.0", "0.125");
-        assert_div("1.0", "-3.0", "-0.33333333333333333333");
-        assert_div("-1.0", "3.0", "-0.33333333333333333333");
-        assert_div("-1.0", "-3.0", "0.33333333333333333333");
-        assert_div("15.0", "-74.0", "-0.2027027027027027027");
-        assert_div("-15.0", "74.0", "-0.2027027027027027027");
-        assert_div("-15.0", "-74.0", "0.2027027027027027027");
+        assert_div("1.0", "-3.0", "-0.333333333333333333");
+        assert_div("-1.0", "3.0", "-0.333333333333333333");
+        assert_div("-1.0", "-3.0", "0.333333333333333333");
+        assert_div("15.0", "-74.0", "-0.202702702702702702");
+        assert_div("-15.0", "74.0", "-0.202702702702702702");
+        assert_div("-15.0", "-74.0", "0.202702702702702702");
     }
 
     #[test]
     fn div_positive_non_ints() {
         assert_div("0.9", "0.08", "11.25");
         assert_div("1.1", "2.2", "0.5");
-        assert_div("2.0", "1.5", "1.33333333333333333333");
-        assert_div("2.3", "3.8", "0.6052631578947368421");
-        assert_div("1.01", "7.02", "0.14387464387464387464");
+        assert_div("2.0", "1.5", "1.333333333333333333");
+        assert_div("2.3", "3.8", "0.605263157894736842");
+        assert_div("1.01", "7.02", "0.143874643874643874");
     }
 
     #[test]
@@ -1012,15 +1017,15 @@ mod tests {
         assert_div("1.1", "-2.2", "-0.5");
         assert_div("-1.1", "2.2", "-0.5");
         assert_div("-1.1", "-2.2", "0.5");
-        assert_div("2.0", "-1.5", "-1.33333333333333333333");
-        assert_div("-2.0", "1.5", "-1.33333333333333333333");
-        assert_div("-2.0", "-1.5", "1.33333333333333333333");
-        assert_div("2.3", "-3.8", "-0.6052631578947368421");
-        assert_div("-2.3", "3.8", "-0.6052631578947368421");
-        assert_div("-2.3", "-3.8", "0.6052631578947368421");
-        assert_div("1.01", "-7.02", "-0.14387464387464387464");
-        assert_div("-1.01", "7.02", "-0.14387464387464387464");
-        assert_div("-1.01", "-7.02", "0.14387464387464387464");
+        assert_div("2.0", "-1.5", "-1.333333333333333333");
+        assert_div("-2.0", "1.5", "-1.333333333333333333");
+        assert_div("-2.0", "-1.5", "1.333333333333333333");
+        assert_div("2.3", "-3.8", "-0.605263157894736842");
+        assert_div("-2.3", "3.8", "-0.605263157894736842");
+        assert_div("-2.3", "-3.8", "0.605263157894736842");
+        assert_div("1.01", "-7.02", "-0.143874643874643874");
+        assert_div("-1.01", "7.02", "-0.143874643874643874");
+        assert_div("-1.01", "-7.02", "0.143874643874643874");
     }
 
     #[test]
