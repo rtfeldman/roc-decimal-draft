@@ -5,6 +5,7 @@ pub fn fuzz_new(num: i128) -> RocDec {
     RocDec(num)
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 struct U256 {
     hi: u128,
     lo: u128,
@@ -416,14 +417,152 @@ impl RocDec {
 }
 
 /// Multiply two 128-bit ints and divide the result by 10^DECIMAL_PLACES
+///
+/// Adapted from https://github.com/nlordell/ethnum-rs
+/// Copyright (c) 2020 Nicholas Rodrigues Lordello
+/// Licensed under the Apache License version 2.0
 #[inline(always)]
 fn div_u256_by_u128(numer: U256, denom: u128) -> U256 {
-    let answer = ethnum::U256::from_words(numer.hi, numer.lo) / ethnum::U256::from_words(0, denom);
+    const N_UDWORD_BITS: u32 = 128;
+    const N_UTWORD_BITS: u32 = 256;
 
-    U256 {
-        hi: *answer.high(),
-        lo: *answer.low(),
+    let mut q;
+    let mut r;
+    let mut sr: u32;
+
+    // special case
+    if numer.hi == 0 {
+        // 0 X
+        // ---
+        // 0 X
+        return U256 {
+            hi: 0,
+            lo: numer.lo / denom,
+        };
     }
+
+    // numer.hi != 0
+    if denom == 0 {
+        // K X
+        // ---
+        // 0 0
+        return U256 {
+            hi: 0,
+            lo: numer.hi / denom,
+        };
+    } else {
+        // K X
+        // ---
+        // 0 K
+        // NOTE: Modified from `if (d.low() & (d.low() - 1)) == 0`.
+        if denom.is_power_of_two() {
+            /* if d is a power of 2 */
+            if denom == 1 {
+                return numer;
+            }
+            sr = denom.trailing_zeros();
+
+            return U256 {
+                hi: numer.hi >> sr,
+                lo: (numer.hi << (N_UDWORD_BITS - sr)) | (numer.lo >> sr),
+            };
+        }
+
+        // K X
+        // ---
+        // 0 K
+        sr = 1 + N_UDWORD_BITS + denom.leading_zeros() - numer.hi.leading_zeros();
+        // 2 <= sr <= N_UTWORD_BITS - 1
+        // q.all = n.all << (N_UTWORD_BITS - sr);
+        // r.all = n.all >> sr;
+        #[allow(clippy::comparison_chain)]
+        if sr == N_UDWORD_BITS {
+            q = U256 {
+                hi: numer.lo,
+                lo: 0,
+            };
+            r = U256 {
+                hi: 0,
+                lo: numer.hi,
+            };
+        } else if sr < N_UDWORD_BITS {
+            /* 2 <= sr <= N_UDWORD_BITS - 1 */
+            q = U256 {
+                hi: numer.lo << (N_UDWORD_BITS - sr),
+                lo: 0,
+            };
+            r = U256 {
+                hi: numer.hi >> sr,
+                lo: (numer.hi << (N_UDWORD_BITS - sr)) | (numer.lo >> sr),
+            };
+        } else {
+            /* N_UDWORD_BITS + 1 <= sr <= N_UTWORD_BITS - 1 */
+            q = U256 {
+                hi: (numer.hi << (N_UTWORD_BITS - sr)) | (numer.lo >> (sr - N_UDWORD_BITS)),
+                lo: numer.lo << (N_UTWORD_BITS - sr),
+            };
+            r = U256 {
+                hi: 0,
+                lo: numer.hi >> (sr - N_UDWORD_BITS),
+            };
+        }
+    }
+    // Not a special case
+    // q and r are initialized with:
+    // q.all = n.all << (N_UTWORD_BITS - sr);
+    // r.all = n.all >> sr;
+    // 1 <= sr <= N_UTWORD_BITS - 1
+    let mut carry = 0u128;
+
+    while sr > 0 {
+        // r:q = ((r:q)  << 1) | carry
+        r.hi = (r.hi << 1) | (r.lo >> (N_UDWORD_BITS - 1));
+        r.lo = (r.lo << 1) | (q.hi >> (N_UDWORD_BITS - 1));
+        q.hi = (q.hi << 1) | (q.lo >> (N_UDWORD_BITS - 1));
+        q.lo = (q.lo << 1) | carry;
+        // carry = 0;
+        // if (r.all >= d.all)
+        // {
+        //     r.all -= d.all;
+        //      carry = 1;
+        // }
+        // NOTE: Modified from `(d - r - 1) >> (N_UTWORD_BITS - 1)` to be an
+        // **arithmetic** shift.
+        let s = {
+            let (lo, carry) = denom.overflowing_sub(r.lo);
+            let hi = 0u128.wrapping_sub(carry as u128).wrapping_sub(r.hi);
+
+            let (_lo, carry) = lo.overflowing_sub(1);
+            let hi = hi.wrapping_sub(carry as u128);
+
+            // TODO this U256 was originally created by:
+            //
+            // ((hi as i128) >> 127).as_u256()
+            //
+            // ...however, I can't figure out where that funciton is defined.
+            // Maybe it's defined using a macro or something. Anyway, hopefully
+            // this is what it would do in this scenario.
+            U256 {
+                hi: 0,
+                lo: ((hi as i128) >> 127) as u128,
+            }
+        };
+        carry = s.lo & 1;
+
+        r = {
+            let (lo, carry) = r.lo.overflowing_sub(denom & s.lo);
+            let hi = r.hi.wrapping_sub(carry as _);
+
+            U256 { hi, lo }
+        };
+
+        sr -= 1;
+    }
+
+    let hi = (q.hi << 1) | (q.lo >> (127));
+    let lo = (q.lo << 1) | carry;
+
+    U256 { hi, lo }
 }
 
 /// Multiply two 128-bit ints and divide the result by 10^DECIMAL_PLACES
